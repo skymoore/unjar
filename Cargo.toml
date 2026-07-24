@@ -2,5 +2,44 @@
 name = "unjar"
 version = "0.1.0"
 edition = "2024"
+description = "Read and export cookies from local browser profiles. CLI and Rust library."
+authors = ["vladkens"]
+license = "MIT"
+repository = "https://github.com/vladkens/unjar"
+homepage = "https://github.com/vladkens/unjar"
+documentation = "https://docs.rs/unjar"
+readme = "readme.md"
+include = ["src/**", "Cargo.toml", "Cargo.lock", "LICENSE", "readme.md"]
+keywords = ["cookies", "browser", "chrome", "firefox", "http"]
+categories = ["command-line-utilities", "web-programming"]
+
+[lib]
+name = "unjar"
+path = "src/lib.rs"
+
+[[bin]]
+name = "unjar"
+path = "src/main.rs"
+
+[lints.rust]
+unused_imports = "deny"
+
+[profile.release]
+panic = "abort"
+strip = true
+lto = true
 
 [dependencies]
+aes = "0.9.1"
+cbc = { version = "0.2.1", features = ["alloc"] }
+clap = { version = "4.6.4", features = ["derive"] }
+dirs = "6.0.0"
+pbkdf2 = "0.13.0"
+rusqlite = { version = "0.40.1", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha1 = "0.11.0"
+sha2 = "0.11.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"
