@@ -1,0 +1,125 @@
+name: main
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+
+      - run: rustup update --no-self-update stable && rustup default stable
+      - run: make check
+      - run: make test
+
+  publish:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: macos-latest
+    needs: test
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+
+      - run: rustup update --no-self-update stable && rustup default stable
+
+      - name: Check Cargo.toml version matches tag
+        run: |
+          TAG="${{ github.ref_name }}"
+          CARGO_VERSION="v$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
+          if [ "$TAG" != "$CARGO_VERSION" ]; then
+            echo "Error: tag ${TAG} does not match Cargo.toml version ${CARGO_VERSION}"
+            exit 1
+          fi
+
+      # https://crates.io/docs/trusted-publishing
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: macos-latest
+    needs: publish
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+
+      - run: rustup update --no-self-update stable && rustup default stable
+      - run: make build
+
+      - name: Check binary version matches tag
+        run: ./target/release/unjar -V | grep "${GITHUB_REF_NAME#v}" || exit 1
+
+      - name: Archive binary
+        run: |
+          cp target/release/unjar unjar
+          tar czf unjar-${{ github.ref_name }}.tar.gz readme.md LICENSE unjar
+          ls -lah unjar-${{ github.ref_name }}.tar.gz
+
+      - name: Extract changelog entry
+        run: |
+          VERSION="${{ github.ref_name }}"
+          NOTES=$(awk "/^## ${VERSION}/{found=1; next} /^## /{found=0} found && !/^---$/" changelog.md)
+          if [ -z "$NOTES" ]; then
+            echo "Error: no changelog entry found for ${VERSION}"
+            exit 1
+          fi
+          echo "$NOTES" > release_notes.txt
+
+      - name: Create GitHub release
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --notes-file release_notes.txt \
+            "unjar-${{ github.ref_name }}.tar.gz"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump Homebrew formula
+        run: |
+          VERSION="${{ github.ref_name }}"
+          TARBALL="unjar-${VERSION}.tar.gz"
+          SHA256=$(shasum -a 256 "$TARBALL" | awk '{print $1}')
+          URL="https://github.com/vladkens/unjar/releases/download/${VERSION}/${TARBALL}"
+
+          git clone "https://x-access-token:${{ secrets.HOMEBREW_REPO_TOKEN }}@github.com/vladkens/homebrew-tap.git" tap
+          cd tap
+          sed -i '' "s|version \".*\"|version \"${VERSION#v}\"|" unjar.rb
+          sed -i '' "s|url \".*\"|url \"${URL}\"|" unjar.rb
+          sed -i '' "s|sha256 \".*\"|sha256 \"${SHA256}\"|" unjar.rb
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add unjar.rb
+          git commit -m "unjar ${VERSION}"
+          git push
