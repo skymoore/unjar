@@ -33,16 +33,18 @@ impl Cookie {
     self.domain.starts_with('.')
   }
 
-  /// Whether the cookie would be sent to `host` per RFC 6265 domain-matching:
-  /// a domain cookie (leading dot) matches its domain and any subdomain, while a
-  /// host-only cookie matches only the exact host.
+  /// Whether the stored cookie domain matches `host` per RFC 6265.
   fn matches(&self, host: &str) -> bool {
-    let domain = self.domain.trim_start_matches('.');
-    if self.include_subdomains() {
-      host == domain || host.ends_with(&format!(".{domain}"))
-    } else {
-      host == domain
+    let host = host.as_bytes();
+    let domain = self.domain.trim_start_matches('.').as_bytes();
+    if host.eq_ignore_ascii_case(domain) {
+      return true;
     }
+
+    self.include_subdomains()
+      && host.len() > domain.len()
+      && host[host.len() - domain.len()..].eq_ignore_ascii_case(domain)
+      && host[host.len() - domain.len() - 1] == b'.'
   }
 }
 
@@ -80,12 +82,16 @@ impl CookieJar {
     self.cookies.iter()
   }
 
-  /// Keep only the cookies that would be sent to `host` (RFC 6265 domain-match).
+  /// Keep cookies whose stored domain matches `host`.
+  ///
+  /// This does not evaluate URL path, scheme, expiration, or other request attributes.
   pub fn domain(&self, host: &str) -> Self {
     self.domains(&[host])
   }
 
-  /// Keep only the cookies that would be sent to any of `hosts` (RFC 6265 domain-match).
+  /// Keep cookies whose stored domain matches any of `hosts`.
+  ///
+  /// This does not evaluate URL path, scheme, expiration, or other request attributes.
   pub fn domains(&self, hosts: &[&str]) -> Self {
     let hosts: Vec<_> = hosts.iter().map(|host| host.trim_start_matches('.')).collect();
     Self {
@@ -100,7 +106,7 @@ impl CookieJar {
 
   /// Serialize as a pretty JSON array.
   pub fn to_json(&self) -> String {
-    serde_json::to_string_pretty(&self.cookies).unwrap_or_else(|_| "[]".into())
+    serde_json::to_string_pretty(&self.cookies).expect("serializing cookies cannot fail")
   }
 
   /// Serialize into Netscape `cookies.txt` format (curl, wget, yt-dlp).
@@ -112,9 +118,10 @@ impl CookieJar {
     for c in &self.cookies {
       let sub = if c.include_subdomains() { "TRUE" } else { "FALSE" };
       let secure = if c.secure { "TRUE" } else { "FALSE" };
+      let http_only = if c.http_only { "#HttpOnly_" } else { "" };
       out.push_str(&format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-        c.domain, sub, c.path, secure, c.expires, c.name, c.value
+        "{}{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        http_only, c.domain, sub, c.path, secure, c.expires, c.name, c.value
       ));
     }
 
@@ -162,6 +169,13 @@ mod tests {
   }
 
   #[test]
+  fn domain_matching_is_case_insensitive() {
+    let jar = sample().domain("API.X.COM");
+    let names: Vec<_> = jar.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["ct0", "auth_token"]);
+  }
+
+  #[test]
   fn host_only_cookie_does_not_leak_across_hosts() {
     // querying x.com must not pull in the api.x.com child-host cookie (ct0).
     let jar = sample().domain("x.com");
@@ -187,6 +201,14 @@ mod tests {
     let out = sample().domain("example.com").to_netscape();
     assert!(out.starts_with("# Netscape HTTP Cookie File"));
     assert!(out.contains("example.com\tFALSE\t/\tTRUE\t0\tsid\tccc"));
+  }
+
+  #[test]
+  fn netscape_preserves_http_only() {
+    let mut cookie = cookie(".example.com", "sid", "ccc");
+    cookie.http_only = true;
+    let out = CookieJar::new(vec![cookie]).to_netscape();
+    assert!(out.contains("#HttpOnly_.example.com\tTRUE\t/\tTRUE\t0\tsid\tccc"));
   }
 
   #[test]

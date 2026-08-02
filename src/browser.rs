@@ -7,7 +7,8 @@ use crate::{Error, Result};
 
 /// A browser whose local profiles unjar can discover.
 ///
-/// Chromium-family variants share a cookie format but use distinct profile locations and decryption credentials.
+/// Chromium-family variants share a cookie format but use distinct profile locations and decryption
+/// credentials.
 #[allow(missing_docs)]
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -69,7 +70,8 @@ impl Browser {
 
   /// Select a profile in this browser by browser-local ID, unique display name, or explicit path.
   ///
-  /// The browser is supplied by `self`, not encoded in `selector`. An explicit path may point to a profile directory or its cookie database.
+  /// The browser is supplied by `self`, not encoded in `selector`. An explicit path may point to a
+  /// profile directory or its cookie database.
   ///
   /// # Examples
   ///
@@ -249,7 +251,9 @@ pub fn profiles() -> Vec<Profile> {
 
 /// Select a discovered profile by browser-local ID, globally unique display name, or known path.
 ///
-/// `selector` does not include a browser name. Use [`Browser::find_profile`] to constrain the lookup to one browser; that method also accepts an explicit profile directory or cookie database path.
+/// `selector` does not include a browser name. Use [`Browser::find_profile`] to constrain the
+/// lookup to one browser; that method also accepts an explicit profile directory or cookie database
+/// path.
 ///
 /// # Examples
 ///

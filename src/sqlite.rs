@@ -1,8 +1,8 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use rusqlite::{Connection, OpenFlags};
+use tempfile::TempDir;
 
 use crate::Result;
 
@@ -35,20 +35,17 @@ pub(crate) fn open_copy(path: &Path) -> Result<Db> {
 }
 
 struct TempCopy {
-  dir: PathBuf,
+  #[allow(dead_code, reason = "keeps the temporary directory alive until Drop")]
+  dir: TempDir,
   db: PathBuf,
 }
 
 impl TempCopy {
   fn of(path: &Path) -> Result<Self> {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-
-    let dir = std::env::temp_dir().join(format!("unjar-{}-{}", std::process::id(), n));
-    std::fs::create_dir_all(&dir)?;
+    let dir = tempfile::Builder::new().prefix("unjar-").tempdir()?;
 
     let name = path.file_name().ok_or("invalid database path")?;
-    let db = dir.join(name);
+    let db = dir.path().join(name);
     std::fs::copy(path, &db)?;
 
     // Copy the WAL/SHM sidecars if present so no committed writes are missed.
@@ -60,12 +57,6 @@ impl TempCopy {
     }
 
     Ok(Self { dir, db })
-  }
-}
-
-impl Drop for TempCopy {
-  fn drop(&mut self) {
-    let _ = std::fs::remove_dir_all(&self.dir);
   }
 }
 

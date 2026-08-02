@@ -1,13 +1,13 @@
 .PHONY: prepare check test docs build update
 
 prepare:
-	cargo fmt
+	cargo +nightly fmt
 	cargo clippy --fix --all-targets --locked --allow-dirty -- -D warnings
 	cargo check --release --locked
 	cargo check --lib --no-default-features --locked
 
 check:
-	cargo fmt --check
+	cargo +nightly fmt --check
 	cargo clippy --all-targets --locked -- -D warnings
 	cargo check --release --locked
 	cargo check --lib --no-default-features --locked

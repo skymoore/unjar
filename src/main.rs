@@ -1,4 +1,9 @@
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
+
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table, presets::NOTHING};
@@ -41,7 +46,7 @@ struct Export {
   #[arg(short, long)]
   browser: Option<Browser>,
 
-  /// Profile ID, unique name, profile directory, or Cookies database
+  /// Profile ID, unique name, profile directory, or cookie database
   #[arg(short, long)]
   profile: Option<String>,
 
@@ -129,7 +134,15 @@ fn export(args: Export) -> Result<()> {
 
   match args.output {
     Some(path) => {
-      std::fs::write(&path, out)?;
+      let mut options = OpenOptions::new();
+      options.write(true).create(true).truncate(true);
+      #[cfg(unix)]
+      options.mode(0o600);
+
+      let mut file = options.open(&path)?;
+      #[cfg(unix)]
+      file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+      file.write_all(out.as_bytes())?;
       eprintln!("wrote {} cookie(s) to {}", jar.len(), path.display());
     }
     None => println!("{out}"),
