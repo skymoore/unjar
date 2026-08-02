@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use rusqlite::{Connection, OpenFlags};
 
-type WithError<T> = Result<T, Box<dyn std::error::Error>>;
+use crate::Result;
 
 /// A SQLite connection, plus an optional temp copy cleaned up when dropped.
 pub(crate) struct Db {
@@ -19,14 +19,14 @@ pub(crate) struct Db {
 /// consistent snapshot. If that fails (e.g. the file is exclusively locked, as
 /// on Windows), the database and its `-wal`/`-shm` sidecars are copied to a temp
 /// directory and the copy is opened instead.
-pub(crate) fn open(path: &Path) -> WithError<Db> {
+pub(crate) fn open(path: &Path) -> Result<Db> {
   match Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
     Ok(conn) => Ok(Db { conn, _temp: None }),
     Err(_) => open_copy(path),
   }
 }
 
-pub(crate) fn open_copy(path: &Path) -> WithError<Db> {
+pub(crate) fn open_copy(path: &Path) -> Result<Db> {
   let temp = TempCopy::of(path)?;
   // The copy is ours alone, so a normal read-write open is safe and lets SQLite
   // replay the copied WAL to surface the latest committed cookies.
@@ -40,7 +40,7 @@ struct TempCopy {
 }
 
 impl TempCopy {
-  fn of(path: &Path) -> WithError<Self> {
+  fn of(path: &Path) -> Result<Self> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
 

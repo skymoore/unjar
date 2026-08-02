@@ -1,14 +1,13 @@
 use std::path::Path;
 
+use crate::Result;
 use crate::browser::Browser;
 use crate::cookie::Cookie;
-
-type WithError<T> = Result<T, Box<dyn std::error::Error>>;
 
 /// Read cookies from a chromium-family `Cookies` database (Chrome, Edge, Brave, ...).
 ///
 /// Values are encrypted; the key is derived per platform and per browser (see [`decrypt`]).
-pub(crate) fn read(path: &Path, browser: Browser) -> WithError<Vec<Cookie>> {
+pub(crate) fn read(path: &Path, browser: Browser) -> Result<Vec<Cookie>> {
   let db = crate::sqlite::open(path)?;
   let conn = &db.conn;
 
@@ -59,12 +58,12 @@ fn chrome_epoch(us: i64) -> i64 {
 }
 
 mod decrypt {
-  use super::WithError;
+  use crate::Result;
   use crate::browser::Browser;
 
   /// macOS Keychain entry (account, service) that holds a browser's Safe Storage key.
   #[cfg(target_os = "macos")]
-  fn keychain_entry(browser: Browser) -> WithError<(&'static str, &'static str)> {
+  fn keychain_entry(browser: Browser) -> Result<(&'static str, &'static str)> {
     Ok(match browser {
       Browser::Chrome => ("Chrome", "Chrome Safe Storage"),
       Browser::Chromium => ("Chromium", "Chromium Safe Storage"),
@@ -76,7 +75,7 @@ mod decrypt {
 
   /// Read the browser's AES key from the macOS Keychain and stretch it via PBKDF2.
   #[cfg(target_os = "macos")]
-  pub(super) fn key(browser: Browser) -> WithError<Vec<u8>> {
+  pub(super) fn key(browser: Browser) -> Result<Vec<u8>> {
     use std::process::Command;
 
     let (account, service) = keychain_entry(browser)?;
@@ -95,12 +94,12 @@ mod decrypt {
   ///
   /// TODO: read the libsecret-derived key (v11) via the Secret Service API.
   #[cfg(target_os = "linux")]
-  pub(super) fn key(_browser: Browser) -> WithError<Vec<u8>> {
+  pub(super) fn key(_browser: Browser) -> Result<Vec<u8>> {
     Ok(derive(b"peanuts", 1))
   }
 
   #[cfg(target_os = "windows")]
-  pub(super) fn key(_browser: Browser) -> WithError<Vec<u8>> {
+  pub(super) fn key(_browser: Browser) -> Result<Vec<u8>> {
     // TODO: DPAPI-unprotect the key from "Local State" and AES-256-GCM decrypt.
     Err("chromium decryption on windows is not implemented yet".into())
   }
@@ -114,7 +113,7 @@ mod decrypt {
 
   /// Decrypt an `encrypted_value` blob using AES-128-CBC (v10 / v11).
   #[cfg(any(target_os = "macos", target_os = "linux"))]
-  pub(super) fn value(key: &[u8], domain: &str, enc: &[u8]) -> WithError<String> {
+  pub(super) fn value(key: &[u8], domain: &str, enc: &[u8]) -> Result<String> {
     use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
     type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
@@ -142,7 +141,7 @@ mod decrypt {
   }
 
   #[cfg(target_os = "windows")]
-  pub(super) fn value(_key: &[u8], _domain: &str, _enc: &[u8]) -> WithError<String> {
+  pub(super) fn value(_key: &[u8], _domain: &str, _enc: &[u8]) -> Result<String> {
     Err("chromium decryption on windows is not implemented yet".into())
   }
 }

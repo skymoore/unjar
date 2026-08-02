@@ -3,18 +3,27 @@ use serde::{Deserialize, Serialize};
 /// A single cookie extracted from a browser store.
 ///
 /// `expires` is a unix timestamp in seconds; `0` marks a session cookie.
+#[non_exhaustive]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cookie {
+  /// Host or domain scope, with a leading dot for domain cookies.
   pub domain: String,
+  /// Cookie name.
   pub name: String,
+  /// Cookie value.
   pub value: String,
+  /// URL path scope.
   pub path: String,
+  /// Unix expiration timestamp in seconds, or `0` for a session cookie.
   pub expires: i64,
+  /// Whether the cookie is restricted to secure connections.
   pub secure: bool,
+  /// Whether scripts are prevented from reading the cookie.
   pub http_only: bool,
 }
 
 impl Cookie {
+  /// Return whether this is a session cookie.
   pub fn is_session(&self) -> bool {
     self.expires == 0
   }
@@ -38,24 +47,35 @@ impl Cookie {
 }
 
 /// A collection of cookies with export helpers.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone)]
 pub struct CookieJar {
-  pub cookies: Vec<Cookie>,
+  cookies: Vec<Cookie>,
 }
 
 impl CookieJar {
-  pub fn new(cookies: Vec<Cookie>) -> Self {
+  pub(crate) fn new(mut cookies: Vec<Cookie>) -> Self {
+    cookies.sort_by(|a, b| {
+      a.domain
+        .trim_start_matches('.')
+        .cmp(b.domain.trim_start_matches('.'))
+        .then_with(|| a.domain.cmp(&b.domain))
+        .then_with(|| a.name.cmp(&b.name))
+        .then_with(|| a.path.cmp(&b.path))
+    });
     Self { cookies }
   }
 
+  /// Return the number of cookies in the jar.
   pub fn len(&self) -> usize {
     self.cookies.len()
   }
 
+  /// Return whether the jar contains no cookies.
   pub fn is_empty(&self) -> bool {
     self.cookies.is_empty()
   }
 
+  /// Iterate over the cookies in deterministic order.
   pub fn iter(&self) -> impl Iterator<Item = &Cookie> {
     self.cookies.iter()
   }
@@ -68,14 +88,14 @@ impl CookieJar {
   /// Keep only the cookies that would be sent to any of `hosts` (RFC 6265 domain-match).
   pub fn domains(&self, hosts: &[&str]) -> Self {
     let hosts: Vec<_> = hosts.iter().map(|host| host.trim_start_matches('.')).collect();
-    Self::new(
-      self
+    Self {
+      cookies: self
         .cookies
         .iter()
         .filter(|cookie| hosts.iter().any(|host| cookie.matches(host)))
         .cloned()
         .collect(),
-    )
+    }
   }
 
   /// Serialize as a pretty JSON array.
@@ -138,7 +158,7 @@ mod tests {
     // but never the host-only cookie scoped to the parent x.com.
     let jar = sample().domain("api.x.com");
     let names: Vec<_> = jar.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, ["auth_token", "ct0"]);
+    assert_eq!(names, ["ct0", "auth_token"]);
   }
 
   #[test]
@@ -153,7 +173,7 @@ mod tests {
   fn multiple_domains_are_combined_without_duplicates() {
     let jar = sample().domains(&["x.com", "api.x.com"]);
     let names: Vec<_> = jar.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, ["auth_token", "g_state", "ct0"]);
+    assert_eq!(names, ["ct0", "auth_token", "g_state"]);
   }
 
   #[test]

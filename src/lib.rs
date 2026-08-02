@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 //! Read and export cookies from local browser profiles.
 //!
 //! `unjar` provides access to cookies stored by locally installed browsers.
@@ -7,7 +9,7 @@
 //! ```no_run
 //! use unjar::Browser;
 //!
-//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! fn main() -> unjar::Result<()> {
 //!   let jar = Browser::Chrome.cookies()?.domain("x.com");
 //!   println!("{}", jar.to_netscape());
 //!   Ok(())
@@ -16,6 +18,7 @@
 
 mod browser;
 mod cookie;
+mod error;
 
 mod chromium;
 mod firefox;
@@ -26,13 +29,12 @@ use browser::Kind;
 
 pub use browser::{Browser, Profile, find_profile, profiles};
 pub use cookie::{Cookie, CookieJar};
-
-type WithError<T> = Result<T, Box<dyn std::error::Error>>;
+pub use error::{Error, Result};
 
 impl Browser {
-  /// Load all cookies from this browser's default profile.
-  pub fn cookies(&self) -> WithError<CookieJar> {
-    let db = self.cookie_db().ok_or_else(|| format!("{self}: cookie database not found"))?;
+  /// Load all cookies from the profile selected by default for this browser.
+  pub fn cookies(&self) -> Result<CookieJar> {
+    let db = self.cookie_db()?;
 
     let cookies = match self.kind() {
       Kind::Chromium => chromium::read(&db, *self)?,
@@ -46,7 +48,7 @@ impl Browser {
 
 impl Profile {
   /// Load all cookies from this profile.
-  pub fn cookies(&self) -> WithError<CookieJar> {
+  pub fn cookies(&self) -> Result<CookieJar> {
     let cookies = match self.browser().kind() {
       Kind::Chromium => chromium::read(self.cookie_db(), self.browser())?,
       Kind::Firefox => firefox::read(self.cookie_db())?,

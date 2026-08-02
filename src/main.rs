@@ -2,9 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table, presets::NOTHING};
-use unjar::{Browser, CookieJar, Profile, find_profile, profiles};
-
-type WithError<T> = Result<T, Box<dyn std::error::Error>>;
+use unjar::{Browser, CookieJar, Profile, Result, find_profile, profiles};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Format {
@@ -56,7 +54,7 @@ struct Export {
   output: Option<PathBuf>,
 }
 
-fn main() -> WithError<()> {
+fn main() -> Result<()> {
   if std::env::args_os().len() == 1 {
     Cli::command().print_help()?;
     println!();
@@ -94,7 +92,7 @@ fn print_profiles() {
   println!("{table}");
 }
 
-fn export(args: Export) -> WithError<()> {
+fn export(args: Export) -> Result<()> {
   if args.domains.is_empty() {
     return Err("missing domain; pass one or more domains, or `all`".into());
   }
@@ -120,20 +118,12 @@ fn export(args: Export) -> WithError<()> {
     Some(profile) => profile.cookies()?,
     None => browser.cookies()?,
   };
-  let mut jar = if all {
+  let jar = if all {
     jar
   } else {
     let domains: Vec<_> = args.domains.iter().map(String::as_str).collect();
     jar.domains(&domains)
   };
-  jar.cookies.sort_by(|a, b| {
-    a.domain
-      .trim_start_matches('.')
-      .cmp(b.domain.trim_start_matches('.'))
-      .then_with(|| a.domain.cmp(&b.domain))
-      .then_with(|| a.name.cmp(&b.name))
-      .then_with(|| a.path.cmp(&b.path))
-  });
 
   let out = format_jar(&jar, args.format);
 
@@ -148,7 +138,7 @@ fn export(args: Export) -> WithError<()> {
   Ok(())
 }
 
-fn select_profile(browser: Option<Browser>, selector: &str) -> Result<Profile, String> {
+fn select_profile(browser: Option<Browser>, selector: &str) -> Result<Profile> {
   match browser {
     Some(browser) => browser.find_profile(selector),
     None => find_profile(selector),

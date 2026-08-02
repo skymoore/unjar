@@ -1,13 +1,12 @@
 use std::path::Path;
 
+use crate::Result;
 use crate::cookie::Cookie;
-
-type WithError<T> = Result<T, Box<dyn std::error::Error>>;
 
 /// Read cookies from a Firefox `cookies.sqlite` database.
 ///
 /// Firefox stores cookie values in plain text, so no decryption is needed.
-pub(crate) fn read(path: &Path) -> WithError<Vec<Cookie>> {
+pub(crate) fn read(path: &Path) -> Result<Vec<Cookie>> {
   let db = crate::sqlite::open_copy(path)?;
   let conn = &db.conn;
 

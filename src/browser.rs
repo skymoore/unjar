@@ -3,7 +3,13 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-/// A supported browser.
+use crate::{Error, Result};
+
+/// A browser whose local profiles unjar can discover.
+///
+/// Chromium-family variants share a cookie format but use distinct profile locations and decryption credentials.
+#[allow(missing_docs)]
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Browser {
   Chrome,
@@ -34,6 +40,7 @@ pub(crate) enum Kind {
 }
 
 impl Browser {
+  /// All browser variants known to this version of unjar.
   pub const ALL: [Browser; 6] = [
     Browser::Chrome,
     Browser::Chromium,
@@ -51,16 +58,29 @@ impl Browser {
     }
   }
 
-  pub(crate) fn cookie_db(&self) -> Option<PathBuf> {
+  pub(crate) fn cookie_db(&self) -> Result<PathBuf> {
     match self.kind() {
-      Kind::Chromium => default_profile(*self).ok().map(|profile| profile.cookie_db),
-      Kind::Firefox => default_profile(*self).ok().map(|profile| profile.cookie_db),
-      Kind::Safari => safari_db(),
+      Kind::Chromium | Kind::Firefox => default_profile(*self).map(|profile| profile.cookie_db),
+      Kind::Safari => {
+        safari_db().ok_or_else(|| format!("{self}: cookie database not found").into())
+      }
     }
   }
 
-  /// Select a profile in this browser by ID, unique display name, or path.
-  pub fn find_profile(&self, selector: &str) -> Result<Profile, String> {
+  /// Select a profile in this browser by browser-local ID, unique display name, or explicit path.
+  ///
+  /// The browser is supplied by `self`, not encoded in `selector`. An explicit path may point to a profile directory or its cookie database.
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// use unjar::Browser;
+  ///
+  /// let profile = Browser::Firefox.find_profile("abc")?;
+  /// println!("{}", profile.path().display());
+  /// # Ok::<(), unjar::Error>(())
+  /// ```
+  pub fn find_profile(&self, selector: &str) -> Result<Profile> {
     let candidates: Vec<_> =
       profiles().into_iter().filter(|profile| profile.browser == *self).collect();
 
@@ -76,19 +96,19 @@ impl Browser {
           None => Profile::from_path(*self, path),
         }
       }
-      None => Err(format!("{self}: profile '{selector}' not found; run `unjar list`")),
+      None => Err(format!("{self}: profile '{selector}' not found; run `unjar list`").into()),
     }
   }
 }
 
 impl Profile {
   /// Build a profile from a profile directory or a cookie database.
-  pub fn from_path(browser: Browser, path: impl AsRef<Path>) -> Result<Self, String> {
+  pub fn from_path(browser: Browser, path: impl AsRef<Path>) -> Result<Self> {
     let path = path.as_ref();
     let (profile_path, cookie_db) = match browser.kind() {
       Kind::Chromium if path.is_file() => {
         if path.file_name().and_then(|name| name.to_str()) != Some("Cookies") {
-          return Err(format!("{}: expected a Cookies database", path.display()));
+          return Err(format!("{}: expected a Cookies database", path.display()).into());
         }
         let parent = path.parent().unwrap_or(path);
         let profile = if parent.file_name().and_then(|name| name.to_str()) == Some("Network") {
@@ -100,25 +120,28 @@ impl Profile {
       }
       Kind::Chromium => {
         let db = profile_cookie_db(path).ok_or_else(|| {
-          format!("{}: Cookies not found (expected Cookies or Network/Cookies)", path.display())
+          Error::from(format!(
+            "{}: Cookies not found (expected Cookies or Network/Cookies)",
+            path.display()
+          ))
         })?;
         (path.to_path_buf(), db)
       }
       Kind::Firefox if path.is_file() => {
         if path.file_name().and_then(|name| name.to_str()) != Some("cookies.sqlite") {
-          return Err(format!("{}: expected a cookies.sqlite database", path.display()));
+          return Err(format!("{}: expected a cookies.sqlite database", path.display()).into());
         }
         (path.parent().unwrap_or(path).to_path_buf(), path.to_path_buf())
       }
       Kind::Firefox => {
         let db = path.join("cookies.sqlite");
         if !db.is_file() {
-          return Err(format!("{}: cookies.sqlite not found", path.display()));
+          return Err(format!("{}: cookies.sqlite not found", path.display()).into());
         }
         (path.to_path_buf(), db)
       }
       Kind::Safari => {
-        return Err(format!("{browser}: explicit profile paths are not supported yet"));
+        return Err(format!("{browser}: explicit profile paths are not supported yet").into());
       }
     };
 
@@ -138,26 +161,32 @@ impl Profile {
     })
   }
 
+  /// Return the browser that owns this profile.
   pub fn browser(&self) -> Browser {
     self.browser
   }
 
+  /// Return the browser-local profile identifier.
   pub fn id(&self) -> &str {
     &self.id
   }
 
+  /// Return the profile's display name.
   pub fn name(&self) -> &str {
     &self.name
   }
 
+  /// Return the profile directory.
   pub fn path(&self) -> &Path {
     &self.path
   }
 
+  /// Return the cookie database path.
   pub fn cookie_db(&self) -> &Path {
     &self.cookie_db
   }
 
+  /// Return whether unjar selects this profile when no profile is specified.
   pub fn is_default(&self) -> bool {
     self.is_default
   }
@@ -178,9 +207,9 @@ impl fmt::Display for Browser {
 }
 
 impl FromStr for Browser {
-  type Err = String;
+  type Err = Error;
 
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
+  fn from_str(s: &str) -> Result<Self> {
     match s.to_ascii_lowercase().as_str() {
       "chrome" => Ok(Browser::Chrome),
       "chromium" => Ok(Browser::Chromium),
@@ -188,12 +217,20 @@ impl FromStr for Browser {
       "brave" => Ok(Browser::Brave),
       "firefox" | "ff" => Ok(Browser::Firefox),
       "safari" => Ok(Browser::Safari),
-      other => Err(format!("unknown browser: {other}")),
+      other => Err(format!("unknown browser: {other}").into()),
     }
   }
 }
 
 /// Discover browser profiles in known locations.
+///
+/// # Examples
+///
+/// ```no_run
+/// for profile in unjar::profiles() {
+///   println!("{}: {}", profile.browser(), profile.path().display());
+/// }
+/// ```
 pub fn profiles() -> Vec<Profile> {
   let mut profiles = Vec::new();
 
@@ -210,8 +247,27 @@ pub fn profiles() -> Vec<Profile> {
   profiles
 }
 
-/// Select a discovered profile by ID, unique display name, or known path.
-pub fn find_profile(selector: &str) -> Result<Profile, String> {
+/// Select a discovered profile by browser-local ID, globally unique display name, or known path.
+///
+/// `selector` does not include a browser name. Use [`Browser::find_profile`] to constrain the lookup to one browser; that method also accepts an explicit profile directory or cookie database path.
+///
+/// # Examples
+///
+/// ```no_run
+/// use unjar::{Browser, find_profile};
+///
+/// // Assume `unjar list` shows Chrome's `Profile 2` and a Firefox profile named `Work`.
+/// let by_id = find_profile("Profile 2")?;
+/// assert_eq!(by_id.browser(), Browser::Chrome);
+///
+/// let by_name = find_profile("Work")?;
+/// assert_eq!(by_name.browser(), Browser::Firefox);
+///
+/// let by_path = find_profile("/Users/alice/Library/Application Support/Firefox/Profiles/abc.work")?;
+/// assert_eq!(by_path.browser(), Browser::Firefox);
+/// # Ok::<(), unjar::Error>(())
+/// ```
+pub fn find_profile(selector: &str) -> Result<Profile> {
   let candidates = profiles();
   match select_discovered(&candidates, selector)? {
     Some(profile) => Ok(profile),
@@ -225,18 +281,18 @@ pub fn find_profile(selector: &str) -> Result<Profile, String> {
 
       match found.as_slice() {
         [profile] => Ok(profile.clone()),
-        [] if path.exists() => {
-          Err(format!("cannot determine the browser for '{}'; pass --browser", path.display()))
-        }
-        [] => Err(format!("{}: path does not exist", path.display())),
+        [] if path.exists() => Err(
+          format!("cannot determine the browser for '{}'; pass --browser", path.display()).into(),
+        ),
+        [] => Err(format!("{}: path does not exist", path.display()).into()),
         _ => Err(ambiguous_error(selector, &found)),
       }
     }
-    None => Err(format!("profile '{selector}' not found; run `unjar list`")),
+    None => Err(format!("profile '{selector}' not found; run `unjar list`").into()),
   }
 }
 
-fn select_discovered(candidates: &[Profile], selector: &str) -> Result<Option<Profile>, String> {
+fn select_discovered(candidates: &[Profile], selector: &str) -> Result<Option<Profile>> {
   let by_id: Vec<_> = candidates.iter().filter(|profile| profile.id == selector).cloned().collect();
   match by_id.as_slice() {
     [profile] => return Ok(Some(profile.clone())),
@@ -253,7 +309,7 @@ fn select_discovered(candidates: &[Profile], selector: &str) -> Result<Option<Pr
   }
 }
 
-fn ambiguous_error(selector: &str, profiles: &[Profile]) -> String {
+fn ambiguous_error(selector: &str, profiles: &[Profile]) -> Error {
   let choices = profiles
     .iter()
     .map(|profile| format!("{} / {}", profile.browser, profile.id))
@@ -263,7 +319,7 @@ fn ambiguous_error(selector: &str, profiles: &[Profile]) -> String {
     .first()
     .is_some_and(|first| profiles.iter().all(|profile| profile.browser == first.browser));
   let hint = if one_browser { "use a profile ID or path" } else { "pass --browser or use a path" };
-  format!("profile '{selector}' is ambiguous ({choices}); {hint}")
+  format!("profile '{selector}' is ambiguous ({choices}); {hint}").into()
 }
 
 fn looks_like_path(selector: &str) -> bool {
@@ -279,18 +335,25 @@ fn same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
-pub(crate) fn default_profile(browser: Browser) -> Result<Profile, String> {
+pub(crate) fn default_profile(browser: Browser) -> Result<Profile> {
   let candidates: Vec<_> =
     profiles().into_iter().filter(|profile| profile.browser == browser).collect();
 
-  if let Some(profile) = candidates.iter().find(|profile| profile.is_default) {
-    return Ok(profile.clone());
+  let defaults: Vec<_> = candidates.iter().filter(|profile| profile.is_default).collect();
+  match defaults.as_slice() {
+    [profile] => return Ok((*profile).clone()),
+    [] => {}
+    _ => {
+      return Err(
+        format!("{browser}: multiple default profiles found; select one by name or ID").into(),
+      );
+    }
   }
 
   match candidates.as_slice() {
     [profile] => Ok(profile.clone()),
-    [] => Err(format!("{browser}: cookie database not found")),
-    _ => Err(format!("{browser}: multiple profiles found; select one by name or ID")),
+    [] => Err(format!("{browser}: cookie database not found").into()),
+    _ => Err(format!("{browser}: multiple profiles found; select one by name or ID").into()),
   }
 }
 
@@ -300,7 +363,7 @@ fn profiles_in_root(browser: Browser, root: &Path) -> Vec<Profile> {
   };
 
   let mut profiles: Vec<_> = entries
-    .filter_map(Result::ok)
+    .filter_map(std::result::Result::ok)
     .filter_map(|entry| {
       let file_type = entry.file_type().ok()?;
       if !file_type.is_dir() || file_type.is_symlink() {
@@ -610,6 +673,7 @@ mod tests {
 
     assert_eq!(select_discovered(&found, "Profile 1").unwrap().unwrap().id(), "Profile 1");
     let error = select_discovered(&found, "Same").unwrap_err();
+    let error = error.to_string();
     assert!(error.contains("ambiguous"));
     assert!(error.contains("chrome / Default"));
     assert!(error.contains("use a profile ID or path"));
@@ -623,6 +687,7 @@ mod tests {
     found.extend(profiles_in_root(Browser::Brave, dir.path()));
 
     let error = select_discovered(&found, "Default").unwrap_err();
+    let error = error.to_string();
     assert!(error.contains("chrome / Default"));
     assert!(error.contains("brave / Default"));
     assert!(error.contains("pass --browser"));

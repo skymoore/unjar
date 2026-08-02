@@ -9,8 +9,7 @@
 
 </div>
 
-`unjar` reads cookies from local browser profiles and exports them as a
-`cookies.txt` file, JSON, or a `Cookie:` header. Use it as a CLI or Rust library.
+`unjar` reads cookies from local browser profiles and exports them as a `cookies.txt` file, JSON, or a `Cookie:` header. Use it as a CLI or Rust library.
 
 ## Installation
 
@@ -40,7 +39,7 @@ Show help without reading any cookies:
 unjar
 ```
 
-Dump cookies for one or more domains using the default browser:
+Dump cookies for one or more domains using Chrome by default:
 
 ```sh
 unjar x.com
@@ -77,9 +76,9 @@ unjar -o cookies.txt x.com
 curl -b cookies.txt https://x.com/...
 ```
 
-`unjar list` prints each discovered profile's browser, local profile ID, default status, and path. A unique ID or display name works without `--browser`; use `--browser` to disambiguate duplicates. An explicit path may point to a profile directory or directly to its cookie database. For a copied or otherwise unknown path, also pass `--browser` so `unjar` can select the right decryption backend.
+`unjar list` prints each discovered profile's browser, local profile ID, default selection, and path. A unique ID or display name works without `--browser`; use `--browser` to disambiguate duplicates. An explicit path may point to a profile directory or directly to its cookie database. For a copied or otherwise unknown path, also pass `--browser` so `unjar` can select the right decryption backend.
 
-The `header` format requires exactly one domain because a Cookie header belongs to one request host. Use JSON or Netscape format when exporting multiple domains or `all`.
+The `header` format accepts exactly one host. It includes every cookie whose stored domain matches that host; it does not evaluate URL path, scheme, expiration, or other request attributes. Use JSON or Netscape format when exporting multiple domains or `all`.
 
 ## Library
 
@@ -90,7 +89,7 @@ cargo add unjar --no-default-features
 ```rust
 use unjar::Browser;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> unjar::Result<()> {
   let profile = Browser::Chrome.find_profile("Default")?;
   let jar = profile.cookies()?.domain("x.com");
 
@@ -108,31 +107,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### twscrape
 
-[twscrape](https://github.com/vladkens/twscrape) accepts a cookie header string
-(`auth_token=...; ct0=...`) or a JSON array — both of which `unjar` emits. Log
-into X in your browser, then hand the cookies straight to an account:
+[twscrape](https://github.com/vladkens/twscrape) accepts a cookie header from stdin. Log into X in your browser, then pipe the cookies straight into a local account:
 
 ```sh
-twscrape add_cookie my_username "$(unjar -f header x.com)"
+unjar -f header x.com | twscrape add_cookie my_account
 ```
 
-> `"$(...)"` works the same in sh, bash, zsh and fish (3.4+): the whole cookie
-> string is passed as a single argument.
+`my_account` is a local identifier in twscrape; it does not need to match the X username stored in the cookies.
 
-From Python:
-
-```python
-import subprocess
-from twscrape import API
-
-cookies = subprocess.check_output(["unjar", "x.com", "-f", "header"], text=True).strip()
-
-api = API()
-await api.pool.add_account_cookies("my_username", cookies)
-```
-
-`unjar x.com` already includes the `auth_token` and `ct0` cookies that twscrape
-needs, plus the rest of the session.
+When the selected profile is logged into X, `unjar x.com` includes the `auth_token` and `ct0` cookies that twscrape needs, plus the rest of the matching session cookies.
 
 ## Supported browsers
 
