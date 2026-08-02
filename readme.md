@@ -88,11 +88,11 @@ cargo add unjar --no-default-features
 ```
 
 ```rust
-use unjar::{Browser, cookies_for_profile};
+use unjar::Browser;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
   let profile = Browser::Chrome.find_profile("Default")?;
-  let jar = cookies_for_profile(&profile, "x.com")?;
+  let jar = profile.cookies()?.domain("x.com");
 
   for c in jar.iter() {
     println!("{}={}", c.name, c.value);

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table, presets::NOTHING};
-use unjar::{Browser, CookieJar, Profile, cookies, cookies_from, find_profile, profiles};
+use unjar::{Browser, CookieJar, Profile, find_profile, profiles};
 
 type WithError<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -117,8 +117,8 @@ fn export(args: Export) -> WithError<()> {
   let browser = args.browser.unwrap_or(Browser::Chrome);
 
   let jar = match profile {
-    Some(profile) => cookies_from(&profile)?,
-    None => cookies(browser)?,
+    Some(profile) => profile.cookies()?,
+    None => browser.cookies()?,
   };
   let mut jar = if all {
     jar

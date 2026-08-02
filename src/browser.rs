@@ -50,8 +50,7 @@ impl Browser {
     }
   }
 
-  /// Path to the default cookie database for this browser, if it exists.
-  pub fn cookie_db(&self) -> Option<PathBuf> {
+  pub(crate) fn cookie_db(&self) -> Option<PathBuf> {
     match self.kind() {
       Kind::Chromium => default_profile(*self).ok().map(|profile| profile.cookie_db),
       Kind::Firefox => firefox_db(),
