@@ -26,7 +26,7 @@ pub(crate) fn open(path: &Path) -> WithError<Db> {
   }
 }
 
-fn open_copy(path: &Path) -> WithError<Db> {
+pub(crate) fn open_copy(path: &Path) -> WithError<Db> {
   let temp = TempCopy::of(path)?;
   // The copy is ours alone, so a normal read-write open is safe and lets SQLite
   // replay the copied WAL to surface the latest committed cookies.

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -53,7 +54,7 @@ impl Browser {
   pub(crate) fn cookie_db(&self) -> Option<PathBuf> {
     match self.kind() {
       Kind::Chromium => default_profile(*self).ok().map(|profile| profile.cookie_db),
-      Kind::Firefox => firefox_db(),
+      Kind::Firefox => default_profile(*self).ok().map(|profile| profile.cookie_db),
       Kind::Safari => safari_db(),
     }
   }
@@ -65,7 +66,16 @@ impl Browser {
 
     match select_discovered(&candidates, selector)? {
       Some(profile) => Ok(profile),
-      None if looks_like_path(selector) => Profile::from_path(*self, selector),
+      None if looks_like_path(selector) => {
+        let path = Path::new(selector);
+        match candidates
+          .iter()
+          .find(|profile| same_path(path, &profile.path) || same_path(path, &profile.cookie_db))
+        {
+          Some(profile) => Ok(profile.clone()),
+          None => Profile::from_path(*self, path),
+        }
+      }
       None => Err(format!("{self}: profile '{selector}' not found; run `unjar list`")),
     }
   }
@@ -74,34 +84,53 @@ impl Browser {
 impl Profile {
   /// Build a profile from a profile directory or a cookie database.
   pub fn from_path(browser: Browser, path: impl AsRef<Path>) -> Result<Self, String> {
-    if browser.kind() != Kind::Chromium {
-      return Err(format!("{browser}: explicit profile paths are not supported yet"));
-    }
-
     let path = path.as_ref();
-    let (profile_path, cookie_db) = if path.is_file() {
-      if path.file_name().and_then(|name| name.to_str()) != Some("Cookies") {
-        return Err(format!("{}: expected a Cookies database", path.display()));
+    let (profile_path, cookie_db) = match browser.kind() {
+      Kind::Chromium if path.is_file() => {
+        if path.file_name().and_then(|name| name.to_str()) != Some("Cookies") {
+          return Err(format!("{}: expected a Cookies database", path.display()));
+        }
+        let parent = path.parent().unwrap_or(path);
+        let profile = if parent.file_name().and_then(|name| name.to_str()) == Some("Network") {
+          parent.parent().unwrap_or(parent)
+        } else {
+          parent
+        };
+        (profile.to_path_buf(), path.to_path_buf())
       }
-      let parent = path.parent().unwrap_or(path);
-      let profile = if parent.file_name().and_then(|name| name.to_str()) == Some("Network") {
-        parent.parent().unwrap_or(parent)
-      } else {
-        parent
-      };
-      (profile.to_path_buf(), path.to_path_buf())
-    } else {
-      let db = profile_cookie_db(path).ok_or_else(|| {
-        format!("{}: Cookies not found (expected Cookies or Network/Cookies)", path.display())
-      })?;
-      (path.to_path_buf(), db)
+      Kind::Chromium => {
+        let db = profile_cookie_db(path).ok_or_else(|| {
+          format!("{}: Cookies not found (expected Cookies or Network/Cookies)", path.display())
+        })?;
+        (path.to_path_buf(), db)
+      }
+      Kind::Firefox if path.is_file() => {
+        if path.file_name().and_then(|name| name.to_str()) != Some("cookies.sqlite") {
+          return Err(format!("{}: expected a cookies.sqlite database", path.display()));
+        }
+        (path.parent().unwrap_or(path).to_path_buf(), path.to_path_buf())
+      }
+      Kind::Firefox => {
+        let db = path.join("cookies.sqlite");
+        if !db.is_file() {
+          return Err(format!("{}: cookies.sqlite not found", path.display()));
+        }
+        (path.to_path_buf(), db)
+      }
+      Kind::Safari => {
+        return Err(format!("{browser}: explicit profile paths are not supported yet"));
+      }
     };
 
     let id =
       profile_path.file_name().and_then(|name| name.to_str()).unwrap_or("custom").to_string();
     Ok(Self {
       browser,
-      name: profile_name(&profile_path).unwrap_or_else(|| id.clone()),
+      name: if browser.kind() == Kind::Chromium {
+        profile_name(&profile_path).unwrap_or_else(|| id.clone())
+      } else {
+        id.clone()
+      },
       id,
       is_default: false,
       path: profile_path,
@@ -172,6 +201,9 @@ pub fn profiles() -> Vec<Profile> {
     if let Some(root) = chromium_root(browser) {
       profiles.extend(profiles_in_root(browser, &root));
     }
+  }
+  if let Some(root) = firefox_root() {
+    profiles.extend(firefox_profiles_in_root(&root));
   }
 
   profiles.sort_by(|a, b| a.browser.cmp(&b.browser).then_with(|| a.id.cmp(&b.id)));
@@ -370,17 +402,88 @@ fn chromium_root(browser: Browser) -> Option<PathBuf> {
   Some(root)
 }
 
-fn firefox_db() -> Option<PathBuf> {
+fn firefox_root() -> Option<PathBuf> {
   #[cfg(target_os = "macos")]
-  let root = dirs::config_dir()?.join("Firefox").join("Profiles");
+  let root = dirs::config_dir()?.join("Firefox");
   #[cfg(target_os = "linux")]
   let root = dirs::home_dir()?.join(".mozilla").join("firefox");
   #[cfg(target_os = "windows")]
-  let root = dirs::config_dir()?.join("Mozilla").join("Firefox").join("Profiles");
+  let root = dirs::config_dir()?.join("Mozilla").join("Firefox");
 
-  // Pick the first profile directory that contains a cookies database.
-  let entries = std::fs::read_dir(&root).ok()?;
-  entries.filter_map(|e| e.ok()).map(|e| e.path().join("cookies.sqlite")).find(|p| p.exists())
+  Some(root)
+}
+
+fn firefox_profiles_in_root(root: &Path) -> Vec<Profile> {
+  let Ok(contents) = std::fs::read_to_string(root.join("profiles.ini")) else {
+    return Vec::new();
+  };
+  let sections = parse_ini(&contents);
+
+  let mut default_paths: Vec<PathBuf> = sections
+    .iter()
+    .filter(|(section, _)| section.starts_with("Install"))
+    .filter_map(|(_, values)| values.get("Default"))
+    .map(|path| root.join(path))
+    .collect();
+  if let Ok(contents) = std::fs::read_to_string(root.join("installs.ini")) {
+    default_paths.extend(
+      parse_ini(&contents)
+        .into_iter()
+        .filter_map(|(_, values)| values.get("Default").cloned())
+        .map(|path| root.join(path)),
+    );
+  }
+
+  sections
+    .into_iter()
+    .filter(|(section, _)| section.starts_with("Profile"))
+    .filter_map(|(_, values)| {
+      let name = values.get("Name")?.clone();
+      let configured_path = values.get("Path")?;
+      let path = if values.get("IsRelative").is_none_or(|value| value != "0") {
+        root.join(configured_path)
+      } else {
+        PathBuf::from(configured_path)
+      };
+      let cookie_db = path.join("cookies.sqlite");
+      if !cookie_db.is_file() {
+        return None;
+      }
+
+      let is_default = if default_paths.is_empty() {
+        values.get("Default").is_some_and(|value| value == "1")
+      } else {
+        default_paths.iter().any(|default| same_path(default, &path))
+      };
+      Some(Profile {
+        browser: Browser::Firefox,
+        id: name.clone(),
+        name,
+        is_default,
+        path,
+        cookie_db,
+      })
+    })
+    .collect()
+}
+
+fn parse_ini(contents: &str) -> Vec<(String, HashMap<String, String>)> {
+  let mut sections = Vec::new();
+
+  for line in contents.lines().map(str::trim) {
+    if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+      continue;
+    }
+    if let Some(section) = line.strip_prefix('[').and_then(|line| line.strip_suffix(']')) {
+      sections.push((section.to_string(), HashMap::new()));
+    } else if let Some((key, value)) = line.split_once('=')
+      && let Some((_, values)) = sections.last_mut()
+    {
+      values.insert(key.trim().to_string(), value.trim().to_string());
+    }
+  }
+
+  sections
 }
 
 fn safari_db() -> Option<PathBuf> {
@@ -412,6 +515,12 @@ mod tests {
     if let Some(name) = name {
       fs::write(path.join("Preferences"), format!(r#"{{"profile":{{"name":"{name}"}}}}"#)).unwrap();
     }
+  }
+
+  fn firefox_profile(root: &Path, directory: &str) {
+    let path = root.join("Profiles").join(directory);
+    fs::create_dir_all(&path).unwrap();
+    fs::write(path.join("cookies.sqlite"), []).unwrap();
   }
 
   #[test]
@@ -455,6 +564,38 @@ mod tests {
 
     let from_dir = Profile::from_path(Browser::Chromium, &path).unwrap();
     let from_db = Profile::from_path(Browser::Chromium, &db).unwrap();
+    assert_eq!(from_dir.cookie_db(), db);
+    assert_eq!(from_db.cookie_db(), db);
+    assert_eq!(from_db.path(), path);
+  }
+
+  #[test]
+  fn discovers_firefox_profiles_and_install_default() {
+    let dir = tempdir().unwrap();
+    firefox_profile(dir.path(), "abc.default-release");
+    fs::write(
+      dir.path().join("profiles.ini"),
+      "[Profile1]\nName=default\nIsRelative=1\nPath=Profiles/old.default\nDefault=1\n\n[Profile0]\nName=default-release\nIsRelative=1\nPath=Profiles/abc.default-release\n\n[InstallABC]\nDefault=Profiles/abc.default-release\nLocked=1\n",
+    )
+    .unwrap();
+
+    let found = firefox_profiles_in_root(dir.path());
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].browser(), Browser::Firefox);
+    assert_eq!(found[0].id(), "default-release");
+    assert!(found[0].is_default());
+    assert!(found[0].cookie_db().ends_with("Profiles/abc.default-release/cookies.sqlite"));
+  }
+
+  #[test]
+  fn explicit_firefox_path_accepts_profile_directory_and_database() {
+    let dir = tempdir().unwrap();
+    firefox_profile(dir.path(), "abc.default-release");
+    let path = dir.path().join("Profiles/abc.default-release");
+    let db = path.join("cookies.sqlite");
+
+    let from_dir = Profile::from_path(Browser::Firefox, &path).unwrap();
+    let from_db = Profile::from_path(Browser::Firefox, &db).unwrap();
     assert_eq!(from_dir.cookie_db(), db);
     assert_eq!(from_db.cookie_db(), db);
     assert_eq!(from_db.path(), path);

@@ -142,10 +142,10 @@ Legend: ✅ tested · 🟡 implemented, not yet tested · 🚧 not implemented.
 | ----------------------- | :---: | :---: | :-----: |
 | Chrome                  |  ✅   |  🟡   |   🚧    |
 | Chromium / Edge / Brave |  🟡   |  🟡   |   🚧    |
-| Firefox                 |  🟡   |  🟡   |   🟡    |
+| Firefox                 |  ✅   |  🟡   |   🟡    |
 | Safari                  |  🚧   |   —   |    —    |
 
-Only Chrome on macOS has been verified end-to-end so far. Linux Chromium decryption currently relies on the `peanuts` fallback and will not decrypt profiles that store the key in the system keyring (v11). Windows and Safari are not implemented yet.
+Chrome and Firefox on macOS have been verified end-to-end. Linux Chromium decryption currently relies on the `peanuts` fallback and will not decrypt profiles that store the key in the system keyring (v11). Windows and Safari are not implemented yet.
 
 ## Contributing
 

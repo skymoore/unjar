@@ -8,7 +8,7 @@ type WithError<T> = Result<T, Box<dyn std::error::Error>>;
 ///
 /// Firefox stores cookie values in plain text, so no decryption is needed.
 pub(crate) fn read(path: &Path) -> WithError<Vec<Cookie>> {
-  let db = crate::sqlite::open(path)?;
+  let db = crate::sqlite::open_copy(path)?;
   let conn = &db.conn;
 
   let mut stmt = conn
