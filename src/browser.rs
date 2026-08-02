@@ -508,9 +508,7 @@ fn firefox_root() -> Option<PathBuf> {
 }
 
 fn firefox_profiles_in_root(root: &Path) -> Vec<Profile> {
-  let Ok(contents) = std::fs::read_to_string(root.join("profiles.ini")) else {
-    return Vec::new();
-  };
+  let contents = std::fs::read_to_string(root.join("profiles.ini")).unwrap_or_default();
   let sections = parse_ini(&contents);
 
   let mut default_paths: Vec<PathBuf> = sections
@@ -528,7 +526,8 @@ fn firefox_profiles_in_root(root: &Path) -> Vec<Profile> {
     );
   }
 
-  sections
+  let mut profiles = firefox_profile_group_profiles(root, &default_paths);
+  let legacy_profiles = sections
     .into_iter()
     .filter(|(section, _)| section.starts_with("Profile"))
     .filter_map(|(_, values)| {
@@ -558,7 +557,62 @@ fn firefox_profiles_in_root(root: &Path) -> Vec<Profile> {
         cookie_db,
       })
     })
-    .collect()
+    .collect::<Vec<_>>();
+
+  for profile in legacy_profiles {
+    if !profiles.iter().any(|candidate| same_path(&candidate.path, &profile.path)) {
+      profiles.push(profile);
+    }
+  }
+
+  profiles
+}
+
+fn firefox_profile_group_profiles(root: &Path, default_paths: &[PathBuf]) -> Vec<Profile> {
+  let Ok(entries) = std::fs::read_dir(root.join("Profile Groups")) else {
+    return Vec::new();
+  };
+
+  let mut profiles = Vec::new();
+  for database in entries.filter_map(std::result::Result::ok).map(|entry| entry.path()) {
+    if database.extension().and_then(|extension| extension.to_str()) != Some("sqlite") {
+      continue;
+    }
+    let Ok(db) = crate::sqlite::open_copy(&database) else {
+      continue;
+    };
+    let Ok(mut statement) = db.conn.prepare("SELECT path, name FROM Profiles") else {
+      continue;
+    };
+    let Ok(rows) =
+      statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+    else {
+      continue;
+    };
+
+    for row in rows.filter_map(std::result::Result::ok) {
+      let (configured_path, name) = row;
+      let path = PathBuf::from(&configured_path);
+      let path = if path.is_absolute() { path } else { root.join(path) };
+      let cookie_db = path.join("cookies.sqlite");
+      if !cookie_db.is_file()
+        || profiles.iter().any(|profile: &Profile| same_path(&profile.path, &path))
+      {
+        continue;
+      }
+
+      profiles.push(Profile {
+        browser: Browser::Firefox,
+        id: name.clone(),
+        name,
+        is_default: default_paths.iter().any(|default| same_path(default, &path)),
+        path,
+        cookie_db,
+      });
+    }
+  }
+
+  profiles
 }
 
 fn parse_ini(contents: &str) -> Vec<(String, HashMap<String, String>)> {
@@ -778,6 +832,40 @@ mod tests {
     assert_eq!(found[0].id(), "default-release");
     assert!(found[0].is_default());
     assert!(found[0].cookie_db().ends_with("Profiles/abc.default-release/cookies.sqlite"));
+  }
+
+  #[test]
+  fn discovers_new_firefox_profile_groups_without_duplicating_legacy_profiles() {
+    let dir = tempdir().unwrap();
+    firefox_profile(dir.path(), "abc.default-release");
+    firefox_profile(dir.path(), "def.Profile 1");
+    fs::write(
+      dir.path().join("profiles.ini"),
+      "[Profile0]\nName=default-release\nIsRelative=1\nPath=Profiles/abc.default-release\n\n[InstallABC]\nDefault=Profiles/abc.default-release\n",
+    )
+    .unwrap();
+
+    let groups = dir.path().join("Profile Groups");
+    fs::create_dir(&groups).unwrap();
+    let connection = rusqlite::Connection::open(groups.join("group.sqlite")).unwrap();
+    connection
+      .execute("CREATE TABLE Profiles (path TEXT NOT NULL, name TEXT NOT NULL)", [])
+      .unwrap();
+    connection
+      .execute(
+        "INSERT INTO Profiles (path, name) VALUES (?1, ?2), (?3, ?4)",
+        ["Profiles/abc.default-release", "Original profile", "Profiles/def.Profile 1", "WORK"],
+      )
+      .unwrap();
+    drop(connection);
+
+    let mut found = firefox_profiles_in_root(dir.path());
+    found.sort_by(|a, b| a.id.cmp(&b.id));
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[0].id(), "Original profile");
+    assert!(found[0].is_default());
+    assert_eq!(found[1].id(), "WORK");
+    assert!(!found[1].is_default());
   }
 
   #[test]
