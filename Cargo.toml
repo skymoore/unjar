@@ -13,6 +13,9 @@ include = ["src/**", "Cargo.toml", "Cargo.lock", "LICENSE", "readme.md"]
 keywords = ["cookies", "browser", "chrome", "firefox", "http"]
 categories = ["command-line-utilities", "web-programming"]
 
+[package.metadata.docs.rs]
+no-default-features = true
+
 [lib]
 name = "unjar"
 path = "src/lib.rs"
@@ -20,9 +23,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "unjar"
 path = "src/main.rs"
+required-features = ["cli"]
 
-[lints.rust]
-unused_imports = "deny"
+[features]
+default = ["cli"]
+cli = ["dep:clap"]
 
 [profile.release]
 panic = "abort"
@@ -30,9 +35,9 @@ strip = true
 lto = true
 
 [dependencies]
-aes = "0.9.1"
+aes = "0.9.2"
 cbc = { version = "0.2.1", features = ["alloc"] }
-clap = { version = "4.6.4", features = ["derive"] }
+clap = { version = "4.6.5", features = ["derive"], optional = true }
 dirs = "6.0.0"
 pbkdf2 = "0.13.0"
 rusqlite = { version = "0.40.1", features = ["bundled"] }

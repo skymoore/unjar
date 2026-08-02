@@ -16,12 +16,12 @@
 
 Legend: ✅ tested · 🟡 implemented, not yet tested · 🚧 not implemented.
 
-| Browser | macOS | Linux | Windows |
-| ------- | :---: | :---: | :-----: |
-| Chrome | ✅ | 🟡 | 🚧 |
-| Chromium / Edge / Brave | 🟡 | 🟡 | 🚧 |
-| Firefox | 🟡 | 🟡 | 🟡 |
-| Safari | 🚧 | — | — |
+| Browser                 | macOS | Linux | Windows |
+| ----------------------- | :---: | :---: | :-----: |
+| Chrome                  |  ✅   |  🟡   |   🚧    |
+| Chromium / Edge / Brave |  🟡   |  🟡   |   🚧    |
+| Firefox                 |  🟡   |  🟡   |   🟡    |
+| Safari                  |  🚧   |   —   |    —    |
 
 Only Chrome on macOS has been verified end-to-end so far. Linux Chromium
 decryption currently relies on the `peanuts` fallback and will not decrypt
@@ -66,7 +66,7 @@ curl -b cookies.txt https://x.com/...
 ## Library
 
 ```sh
-cargo add unjar
+cargo add unjar --no-default-features
 ```
 
 ```rust
