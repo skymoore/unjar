@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 /// A supported browser.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Browser {
   Chrome,
   Chromium,
@@ -19,6 +19,7 @@ pub struct Profile {
   browser: Browser,
   id: String,
   name: String,
+  is_default: bool,
   path: PathBuf,
   cookie_db: PathBuf,
 }
@@ -57,6 +58,18 @@ impl Browser {
       Kind::Safari => safari_db(),
     }
   }
+
+  /// Select a profile in this browser by ID, unique display name, or path.
+  pub fn find_profile(&self, selector: &str) -> Result<Profile, String> {
+    let candidates: Vec<_> =
+      profiles().into_iter().filter(|profile| profile.browser == *self).collect();
+
+    match select_discovered(&candidates, selector)? {
+      Some(profile) => Ok(profile),
+      None if looks_like_path(selector) => Profile::from_path(*self, selector),
+      None => Err(format!("{self}: profile '{selector}' not found; run `unjar list`")),
+    }
+  }
 }
 
 impl Profile {
@@ -85,11 +98,13 @@ impl Profile {
       (path.to_path_buf(), db)
     };
 
-    let fallback = profile_path.file_name().and_then(|name| name.to_str()).unwrap_or("custom");
+    let id =
+      profile_path.file_name().and_then(|name| name.to_str()).unwrap_or("custom").to_string();
     Ok(Self {
       browser,
-      id: format!("{browser}:path"),
-      name: profile_name(&profile_path).unwrap_or_else(|| fallback.to_string()),
+      name: profile_name(&profile_path).unwrap_or_else(|| id.clone()),
+      id,
+      is_default: false,
       path: profile_path,
       cookie_db,
     })
@@ -113,6 +128,10 @@ impl Profile {
 
   pub fn cookie_db(&self) -> &Path {
     &self.cookie_db
+  }
+
+  pub fn is_default(&self) -> bool {
+    self.is_default
   }
 }
 
@@ -156,45 +175,84 @@ pub fn profiles() -> Vec<Profile> {
     }
   }
 
-  profiles.sort_by(|a, b| a.id.cmp(&b.id));
+  profiles.sort_by(|a, b| a.browser.cmp(&b.browser).then_with(|| a.id.cmp(&b.id)));
   profiles
 }
 
-/// Select one discovered profile by its exact ID or unique display name.
-pub fn find_profile(browser: Browser, selector: &str) -> Result<Profile, String> {
-  find_in_profiles(profiles(), browser, selector)
+/// Select a discovered profile by ID, unique display name, or known path.
+pub fn find_profile(selector: &str) -> Result<Profile, String> {
+  let candidates = profiles();
+  match select_discovered(&candidates, selector)? {
+    Some(profile) => Ok(profile),
+    None if looks_like_path(selector) => {
+      let path = Path::new(selector);
+      let found: Vec<_> = candidates
+        .iter()
+        .filter(|profile| same_path(path, &profile.path) || same_path(path, &profile.cookie_db))
+        .cloned()
+        .collect();
+
+      match found.as_slice() {
+        [profile] => Ok(profile.clone()),
+        [] if path.exists() => {
+          Err(format!("cannot determine the browser for '{}'; pass --browser", path.display()))
+        }
+        [] => Err(format!("{}: path does not exist", path.display())),
+        _ => Err(ambiguous_error(selector, &found)),
+      }
+    }
+    None => Err(format!("profile '{selector}' not found; run `unjar list`")),
+  }
 }
 
-fn find_in_profiles(
-  profiles: impl IntoIterator<Item = Profile>,
-  browser: Browser,
-  selector: &str,
-) -> Result<Profile, String> {
-  let candidates: Vec<_> =
-    profiles.into_iter().filter(|profile| profile.browser == browser).collect();
-  if let Some(profile) = candidates.iter().find(|profile| profile.id == selector) {
-    return Ok(profile.clone());
+fn select_discovered(candidates: &[Profile], selector: &str) -> Result<Option<Profile>, String> {
+  let by_id: Vec<_> = candidates.iter().filter(|profile| profile.id == selector).cloned().collect();
+  match by_id.as_slice() {
+    [profile] => return Ok(Some(profile.clone())),
+    [] => {}
+    _ => return Err(ambiguous_error(selector, &by_id)),
   }
 
-  let named: Vec<_> = candidates.iter().filter(|profile| profile.name == selector).collect();
-  match named.as_slice() {
-    [profile] => Ok((*profile).clone()),
-    [] => Err(format!("{browser}: profile '{selector}' not found; run `unjar list`")),
-    _ => {
-      let ids = named.iter().map(|profile| profile.id.as_str()).collect::<Vec<_>>().join(", ");
-      Err(format!("{browser}: profile name '{selector}' is ambiguous; use one of: {ids}"))
-    }
+  let by_name: Vec<_> =
+    candidates.iter().filter(|profile| profile.name == selector).cloned().collect();
+  match by_name.as_slice() {
+    [profile] => Ok(Some(profile.clone())),
+    [] => Ok(None),
+    _ => Err(ambiguous_error(selector, &by_name)),
   }
+}
+
+fn ambiguous_error(selector: &str, profiles: &[Profile]) -> String {
+  let choices = profiles
+    .iter()
+    .map(|profile| format!("{} / {}", profile.browser, profile.id))
+    .collect::<Vec<_>>()
+    .join(", ");
+  let one_browser = profiles
+    .first()
+    .is_some_and(|first| profiles.iter().all(|profile| profile.browser == first.browser));
+  let hint = if one_browser { "use a profile ID or path" } else { "pass --browser or use a path" };
+  format!("profile '{selector}' is ambiguous ({choices}); {hint}")
+}
+
+fn looks_like_path(selector: &str) -> bool {
+  let path = Path::new(selector);
+  path.is_absolute() || path.components().count() > 1 || path.exists()
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+  a == b
+    || match (a.canonicalize(), b.canonicalize()) {
+      (Ok(a), Ok(b)) => a == b,
+      _ => false,
+    }
 }
 
 pub(crate) fn default_profile(browser: Browser) -> Result<Profile, String> {
   let candidates: Vec<_> =
     profiles().into_iter().filter(|profile| profile.browser == browser).collect();
 
-  if let Some(profile) = candidates
-    .iter()
-    .find(|profile| profile.path.file_name().and_then(|name| name.to_str()) == Some("Default"))
-  {
+  if let Some(profile) = candidates.iter().find(|profile| profile.is_default) {
     return Ok(profile.clone());
   }
 
@@ -210,7 +268,7 @@ fn profiles_in_root(browser: Browser, root: &Path) -> Vec<Profile> {
     return Vec::new();
   };
 
-  entries
+  let mut profiles: Vec<_> = entries
     .filter_map(Result::ok)
     .filter_map(|entry| {
       let file_type = entry.file_type().ok()?;
@@ -222,13 +280,26 @@ fn profiles_in_root(browser: Browser, root: &Path) -> Vec<Profile> {
       let directory = entry.file_name().to_string_lossy().into_owned();
       Some(Profile {
         browser,
-        id: format!("{browser}:{directory}"),
+        id: directory.clone(),
         name: profile_name(&path).unwrap_or_else(|| directory.clone()),
+        is_default: false,
         path,
         cookie_db,
       })
     })
-    .collect()
+    .collect();
+
+  let default_id = chromium_default_profile_id(root)
+    .filter(|id| profiles.iter().any(|profile| profile.id == *id))
+    .or_else(|| profiles.iter().any(|profile| profile.id == "Default").then(|| "Default".into()))
+    .or_else(|| (profiles.len() == 1).then(|| profiles[0].id.clone()));
+  if let Some(default_id) = default_id
+    && let Some(profile) = profiles.iter_mut().find(|profile| profile.id == default_id)
+  {
+    profile.is_default = true;
+  }
+
+  profiles
 }
 
 fn profile_cookie_db(profile: &Path) -> Option<PathBuf> {
@@ -239,6 +310,12 @@ fn profile_name(profile: &Path) -> Option<String> {
   let data = std::fs::read_to_string(profile.join("Preferences")).ok()?;
   let value: serde_json::Value = serde_json::from_str(&data).ok()?;
   value.get("profile")?.get("name")?.as_str().filter(|name| !name.is_empty()).map(str::to_owned)
+}
+
+fn chromium_default_profile_id(root: &Path) -> Option<String> {
+  let data = std::fs::read_to_string(root.join("Local State")).ok()?;
+  let value: serde_json::Value = serde_json::from_str(&data).ok()?;
+  value.get("profile")?.get("last_used")?.as_str().filter(|id| !id.is_empty()).map(str::to_owned)
 }
 
 /// Return the first path in `candidates` that exists.
@@ -349,11 +426,25 @@ mod tests {
     found.sort_by(|a, b| a.id.cmp(&b.id));
 
     assert_eq!(found.len(), 2);
-    assert_eq!(found[0].id(), "chrome:Default");
+    assert_eq!(found[0].id(), "Default");
     assert_eq!(found[0].name(), "Personal");
-    assert_eq!(found[1].id(), "chrome:Profile 1");
+    assert_eq!(found[1].id(), "Profile 1");
     assert_eq!(found[1].name(), "Work");
+    assert!(found[0].is_default());
+    assert!(!found[1].is_default());
     assert!(found[1].cookie_db().ends_with("Network/Cookies"));
+  }
+
+  #[test]
+  fn marks_last_used_profile_as_default() {
+    let dir = tempdir().unwrap();
+    profile(dir.path(), "Default", Some("Personal"), false);
+    profile(dir.path(), "Profile 1", Some("Work"), false);
+    fs::write(dir.path().join("Local State"), r#"{"profile":{"last_used":"Profile 1"}}"#).unwrap();
+
+    let found = profiles_in_root(Browser::Chrome, dir.path());
+    assert!(found.iter().find(|profile| profile.id() == "Profile 1").unwrap().is_default());
+    assert!(!found.iter().find(|profile| profile.id() == "Default").unwrap().is_default());
   }
 
   #[test]
@@ -371,18 +462,29 @@ mod tests {
   }
 
   #[test]
-  fn selection_prefers_id_and_rejects_duplicate_names() {
+  fn selection_prefers_local_id_and_rejects_duplicate_names() {
     let dir = tempdir().unwrap();
     profile(dir.path(), "Default", Some("Same"), false);
     profile(dir.path(), "Profile 1", Some("Same"), false);
     let found = profiles_in_root(Browser::Chrome, dir.path());
 
-    assert_eq!(
-      find_in_profiles(found.clone(), Browser::Chrome, "chrome:Profile 1").unwrap().id(),
-      "chrome:Profile 1"
-    );
-    let error = find_in_profiles(found, Browser::Chrome, "Same").unwrap_err();
+    assert_eq!(select_discovered(&found, "Profile 1").unwrap().unwrap().id(), "Profile 1");
+    let error = select_discovered(&found, "Same").unwrap_err();
     assert!(error.contains("ambiguous"));
-    assert!(error.contains("chrome:Default"));
+    assert!(error.contains("chrome / Default"));
+    assert!(error.contains("use a profile ID or path"));
+  }
+
+  #[test]
+  fn global_selection_rejects_duplicate_ids_across_browsers() {
+    let dir = tempdir().unwrap();
+    profile(dir.path(), "Default", Some("Personal"), false);
+    let mut found = profiles_in_root(Browser::Chrome, dir.path());
+    found.extend(profiles_in_root(Browser::Brave, dir.path()));
+
+    let error = select_discovered(&found, "Default").unwrap_err();
+    assert!(error.contains("chrome / Default"));
+    assert!(error.contains("brave / Default"));
+    assert!(error.contains("pass --browser"));
   }
 }

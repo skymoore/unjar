@@ -62,8 +62,20 @@ impl CookieJar {
 
   /// Keep only the cookies that would be sent to `host` (RFC 6265 domain-match).
   pub fn domain(&self, host: &str) -> Self {
-    let host = host.trim_start_matches('.');
-    Self::new(self.cookies.iter().filter(|c| c.matches(host)).cloned().collect())
+    self.domains(&[host])
+  }
+
+  /// Keep only the cookies that would be sent to any of `hosts` (RFC 6265 domain-match).
+  pub fn domains(&self, hosts: &[&str]) -> Self {
+    let hosts: Vec<_> = hosts.iter().map(|host| host.trim_start_matches('.')).collect();
+    Self::new(
+      self
+        .cookies
+        .iter()
+        .filter(|cookie| hosts.iter().any(|host| cookie.matches(host)))
+        .cloned()
+        .collect(),
+    )
   }
 
   /// Serialize as a pretty JSON array.
@@ -135,6 +147,13 @@ mod tests {
     let jar = sample().domain("x.com");
     let names: Vec<_> = jar.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, ["auth_token", "g_state"]);
+  }
+
+  #[test]
+  fn multiple_domains_are_combined_without_duplicates() {
+    let jar = sample().domains(&["x.com", "api.x.com"]);
+    let names: Vec<_> = jar.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["auth_token", "g_state", "ct0"]);
   }
 
   #[test]

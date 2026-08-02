@@ -12,22 +12,6 @@
 `unjar` reads cookies from local browser profiles and exports them as a
 `cookies.txt` file, JSON, or a `Cookie:` header. Use it as a CLI or Rust library.
 
-## Supported browsers
-
-Legend: ✅ tested · 🟡 implemented, not yet tested · 🚧 not implemented.
-
-| Browser                 | macOS | Linux | Windows |
-| ----------------------- | :---: | :---: | :-----: |
-| Chrome                  |  ✅   |  🟡   |   🚧    |
-| Chromium / Edge / Brave |  🟡   |  🟡   |   🚧    |
-| Firefox                 |  🟡   |  🟡   |   🟡    |
-| Safari                  |  🚧   |   —   |    —    |
-
-Only Chrome on macOS has been verified end-to-end so far. Linux Chromium
-decryption currently relies on the `peanuts` fallback and will not decrypt
-profiles that store the key in the system keyring (v11). Windows and Safari are
-not implemented yet.
-
 ## Installation
 
 Install using [Homebrew](https://brew.sh/):
@@ -44,24 +28,58 @@ cargo install unjar
 
 ## CLI
 
+Show discovered browser profiles:
+
 ```sh
-# show discovered browser profiles
 unjar list
+```
 
-# dump x.com cookies using the default browser
+Show help without reading any cookies:
+
+```sh
+unjar
+```
+
+Dump cookies for one or more domains using the default browser:
+
+```sh
 unjar x.com
+```
 
-# select a profile by stable ID, unique display name, or path
-unjar x.com --profile 'chrome:Profile 1'
-unjar x.com --profile 'Work'
-unjar x.com --profile /path/to/profile
+```sh
+unjar x.com t.co
+```
 
-# straight into a file for curl / yt-dlp
-unjar x.com -o cookies.txt
+Explicitly dump every cookie from the selected browser or profile:
+
+```sh
+unjar all
+```
+
+Select a profile by ID, unique display name, or path:
+
+```sh
+unjar -p 'Profile 1' x.com
+```
+
+```sh
+unjar -p 'Work' x.com
+```
+
+```sh
+unjar -b chromium -p /path/to/profile x.com
+```
+
+Write cookies to a file and use it with curl or yt-dlp:
+
+```sh
+unjar -o cookies.txt x.com
 curl -b cookies.txt https://x.com/...
 ```
 
-`unjar list` prints each discovered profile's browser, stable ID, display name, and path. If display names are duplicated, select the profile by ID. Explicit paths may point to a profile directory or directly to its cookie database.
+`unjar list` prints each discovered profile's browser, local profile ID, default status, and path. A unique ID or display name works without `--browser`; use `--browser` to disambiguate duplicates. An explicit path may point to a profile directory or directly to its cookie database. For a copied or otherwise unknown path, also pass `--browser` so `unjar` can select the right decryption backend.
+
+The `header` format requires exactly one domain because a Cookie header belongs to one request host. Use JSON or Netscape format when exporting multiple domains or `all`.
 
 ## Library
 
@@ -70,10 +88,10 @@ cargo add unjar --no-default-features
 ```
 
 ```rust
-use unjar::{Browser, cookies_for_profile, find_profile};
+use unjar::{Browser, cookies_for_profile};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-  let profile = find_profile(Browser::Chrome, "chrome:Default")?;
+  let profile = Browser::Chrome.find_profile("Default")?;
   let jar = cookies_for_profile(&profile, "x.com")?;
 
   for c in jar.iter() {
@@ -95,7 +113,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 into X in your browser, then hand the cookies straight to an account:
 
 ```sh
-twscrape add_cookie my_username "$(unjar x.com -f header)"
+twscrape add_cookie my_username "$(unjar -f header x.com)"
 ```
 
 > `"$(...)"` works the same in sh, bash, zsh and fish (3.4+): the whole cookie
@@ -115,6 +133,19 @@ await api.pool.add_account_cookies("my_username", cookies)
 
 `unjar x.com` already includes the `auth_token` and `ct0` cookies that twscrape
 needs, plus the rest of the session.
+
+## Supported browsers
+
+Legend: ✅ tested · 🟡 implemented, not yet tested · 🚧 not implemented.
+
+| Browser                 | macOS | Linux | Windows |
+| ----------------------- | :---: | :---: | :-----: |
+| Chrome                  |  ✅   |  🟡   |   🚧    |
+| Chromium / Edge / Brave |  🟡   |  🟡   |   🚧    |
+| Firefox                 |  🟡   |  🟡   |   🟡    |
+| Safari                  |  🚧   |   —   |    —    |
+
+Only Chrome on macOS has been verified end-to-end so far. Linux Chromium decryption currently relies on the `peanuts` fallback and will not decrypt profiles that store the key in the system keyring (v11). Windows and Safari are not implemented yet.
 
 ## Contributing
 

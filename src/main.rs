@@ -1,14 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
-use unjar::{
-  Browser, CookieJar, Profile, cookies, cookies_for, cookies_for_profile, cookies_from,
-  find_profile, profiles,
-};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use comfy_table::{Attribute, Cell, Color, ContentArrangement, Table, presets::NOTHING};
+use unjar::{Browser, CookieJar, Profile, cookies, cookies_from, find_profile, profiles};
 
 type WithError<T> = Result<T, Box<dyn std::error::Error>>;
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Format {
   /// Netscape cookies.txt (curl, wget, yt-dlp)
   Netscape,
@@ -20,7 +18,7 @@ enum Format {
 
 /// Read and export cookies from local browser profiles.
 #[derive(Debug, Parser)]
-#[command(name = "unjar", version, about, subcommand_precedence_over_arg = true)]
+#[command(name = "unjar", version, about, args_conflicts_with_subcommands = true)]
 struct Cli {
   #[command(subcommand)]
   command: Option<Command>,
@@ -37,14 +35,15 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct Export {
-  /// Domain to export (e.g. x.com). Omit to dump every cookie
-  domain: Option<String>,
+  /// Domains to export (e.g. x.com t.co), or `all` to dump every cookie
+  #[arg(value_name = "DOMAIN")]
+  domains: Vec<String>,
 
-  /// Browser to read from
-  #[arg(short, long, default_value = "chrome")]
-  browser: Browser,
+  /// Browser to use (defaults to chrome when --profile is omitted)
+  #[arg(short, long)]
+  browser: Option<Browser>,
 
-  /// Profile name, discovered ID, profile directory, or Cookies database
+  /// Profile ID, unique name, profile directory, or Cookies database
   #[arg(short, long)]
   profile: Option<String>,
 
@@ -58,6 +57,12 @@ struct Export {
 }
 
 fn main() -> WithError<()> {
+  if std::env::args_os().len() == 1 {
+    Cli::command().print_help()?;
+    println!();
+    return Ok(());
+  }
+
   let cli = Cli::parse();
 
   if matches!(cli.command, Some(Command::List)) {
@@ -69,30 +74,66 @@ fn main() -> WithError<()> {
 }
 
 fn print_profiles() {
-  println!("BROWSER\tID\tNAME\tPATH");
+  let mut table = Table::new();
+  table.load_preset(NOTHING);
+  table.set_content_arrangement(ContentArrangement::Dynamic);
+  table.set_header(
+    ["Browser", "Profile", "Default", "Path"]
+      .map(|heading| Cell::new(heading).add_attribute(Attribute::Bold)),
+  );
+
   for profile in profiles() {
-    println!(
-      "{}\t{}\t{}\t{}",
-      profile.browser(),
-      profile.id(),
-      profile.name(),
-      profile.path().display()
-    );
+    table.add_row([
+      Cell::new(profile.browser()).fg(Color::Cyan),
+      Cell::new(profile.id()).fg(Color::Magenta),
+      Cell::new(if profile.is_default() { "yes" } else { "" }).fg(Color::Green),
+      Cell::new(profile.path().display()),
+    ]);
   }
+
+  println!("{table}");
 }
 
 fn export(args: Export) -> WithError<()> {
+  if args.domains.is_empty() {
+    return Err("missing domain; pass one or more domains, or `all`".into());
+  }
+  if args.domains.iter().any(|domain| domain == "list") {
+    return Err("`list` is a command and cannot be combined with export arguments".into());
+  }
+
+  let all = matches!(args.domains.as_slice(), [domain] if domain == "all");
+  if !all && args.domains.iter().any(|domain| domain == "all") {
+    return Err("`all` cannot be combined with domains".into());
+  }
+  if args.format == Format::Header && (all || args.domains.len() != 1) {
+    return Err("header format requires exactly one domain".into());
+  }
+
   let profile = match &args.profile {
     Some(selector) => Some(select_profile(args.browser, selector)?),
     None => None,
   };
+  let browser = args.browser.unwrap_or(Browser::Chrome);
 
-  let jar = match (profile, &args.domain) {
-    (Some(profile), Some(domain)) => cookies_for_profile(&profile, domain)?,
-    (Some(profile), None) => cookies_from(&profile)?,
-    (None, Some(domain)) => cookies_for(args.browser, domain)?,
-    (None, None) => cookies(args.browser)?,
+  let jar = match profile {
+    Some(profile) => cookies_from(&profile)?,
+    None => cookies(browser)?,
   };
+  let mut jar = if all {
+    jar
+  } else {
+    let domains: Vec<_> = args.domains.iter().map(String::as_str).collect();
+    jar.domains(&domains)
+  };
+  jar.cookies.sort_by(|a, b| {
+    a.domain
+      .trim_start_matches('.')
+      .cmp(b.domain.trim_start_matches('.'))
+      .then_with(|| a.domain.cmp(&b.domain))
+      .then_with(|| a.name.cmp(&b.name))
+      .then_with(|| a.path.cmp(&b.path))
+  });
 
   let out = format_jar(&jar, args.format);
 
@@ -107,17 +148,10 @@ fn export(args: Export) -> WithError<()> {
   Ok(())
 }
 
-fn select_profile(browser: Browser, selector: &str) -> Result<Profile, String> {
-  let discovered = find_profile(browser, selector);
-  if discovered.is_ok() {
-    return discovered;
-  }
-
-  let path = Path::new(selector);
-  if path.is_absolute() || path.components().count() > 1 || path.exists() {
-    Profile::from_path(browser, path)
-  } else {
-    discovered
+fn select_profile(browser: Option<Browser>, selector: &str) -> Result<Profile, String> {
+  match browser {
+    Some(browser) => browser.find_profile(selector),
+    None => find_profile(selector),
   }
 }
 
@@ -142,18 +176,82 @@ mod tests {
   }
 
   #[test]
-  fn legacy_export_syntax_and_profile_are_accepted() {
+  fn export_arguments_conflict_with_list() {
+    for args in [
+      vec!["unjar", "x.com", "list"],
+      vec!["unjar", "-f", "json", "list"],
+      vec!["unjar", "-b", "chrome", "list"],
+    ] {
+      let cli = Cli::try_parse_from(args).unwrap();
+      assert!(export(cli.export).unwrap_err().to_string().contains("`list` is a command"));
+    }
+    assert!(Cli::try_parse_from(["unjar", "list", "x.com"]).is_err());
+  }
+
+  #[test]
+  fn browser_and_profile_flags_are_independent() {
     let cli = Cli::try_parse_from([
       "unjar",
       "example.com",
       "--browser",
       "chrome",
       "--profile",
-      "chrome:Profile 1",
+      "Profile 1",
     ])
     .unwrap();
-    assert_eq!(cli.export.domain.as_deref(), Some("example.com"));
-    assert_eq!(cli.export.browser, Browser::Chrome);
-    assert_eq!(cli.export.profile.as_deref(), Some("chrome:Profile 1"));
+    assert_eq!(cli.export.domains, ["example.com"]);
+    assert_eq!(cli.export.browser, Some(Browser::Chrome));
+    assert_eq!(cli.export.profile.as_deref(), Some("Profile 1"));
+  }
+
+  #[test]
+  fn browser_is_optional() {
+    let cli = Cli::try_parse_from(["unjar", "example.com", "-p", "Work"]).unwrap();
+    assert_eq!(cli.export.browser, None);
+    assert_eq!(cli.export.profile.as_deref(), Some("Work"));
+  }
+
+  #[test]
+  fn multiple_domains_are_positional_arguments() {
+    let cli = Cli::try_parse_from(["unjar", "x.com", "t.co", "-p", "Work"]).unwrap();
+    assert_eq!(cli.export.domains, ["x.com", "t.co"]);
+  }
+
+  #[test]
+  fn options_can_surround_domains() {
+    for args in [
+      ["unjar", "-f", "json", "x.com", "t.co"],
+      ["unjar", "x.com", "-f", "json", "t.co"],
+      ["unjar", "x.com", "t.co", "-f", "json"],
+    ] {
+      let cli = Cli::try_parse_from(args).unwrap();
+      assert_eq!(cli.export.domains, ["x.com", "t.co"]);
+      assert_eq!(cli.export.format, Format::Json);
+    }
+  }
+
+  #[test]
+  fn all_is_an_explicit_exclusive_target() {
+    let cli = Cli::try_parse_from(["unjar", "all", "-b", "firefox"]).unwrap();
+    assert_eq!(cli.export.domains, ["all"]);
+
+    let cli = Cli::try_parse_from(["unjar", "x.com", "all"]).unwrap();
+    assert!(export(cli.export).unwrap_err().to_string().contains("cannot be combined"));
+  }
+
+  #[test]
+  fn a_target_is_required_for_export() {
+    let cli = Cli::try_parse_from(["unjar", "-b", "chrome"]).unwrap();
+    assert!(export(cli.export).unwrap_err().to_string().contains("missing domain"));
+  }
+
+  #[test]
+  fn header_format_requires_one_domain() {
+    for args in
+      [vec!["unjar", "-f", "header", "all"], vec!["unjar", "-f", "header", "x.com", "t.co"]]
+    {
+      let cli = Cli::try_parse_from(args).unwrap();
+      assert!(export(cli.export).unwrap_err().to_string().contains("exactly one domain"));
+    }
   }
 }

@@ -1,0 +1,11 @@
+{
+  "[rust]": { "editor.defaultFormatter": "rust-lang.rust-analyzer" },
+  "[toml]": { "editor.defaultFormatter": "tamasfe.even-better-toml" },
+  "editor.formatOnSave": true,
+  "files.exclude": {
+    "Cargo.lock": true,
+    "LICENSE": true,
+    "target": true
+  },
+  "prettier.requireConfig": false
+}
