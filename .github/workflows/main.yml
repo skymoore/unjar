@@ -59,14 +59,9 @@ jobs:
           make build
           test "$(./target/release/unjar -V)" = "unjar ${GITHUB_REF_NAME#v}"
           VERSION="${{ github.ref_name }}"
-          NOTES=$(awk -v heading="## $VERSION" '$0 == heading {found=1; next} /^## / {found=0} found && $0 != "---"' changelog.md)
+          NOTES=$(awk "/^## ${VERSION}/{found=1; next} /^## /{found=0} found && !/^---$/" changelog.md)
           test -n "$NOTES"
           cargo publish --dry-run --locked
-
-      - name: Check Homebrew repository access
-        run: test "$(gh api repos/vladkens/homebrew-tap --jq '.permissions.push')" = "true"
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_REPO_TOKEN }}
 
       # https://crates.io/docs/trusted-publishing
       - uses: rust-lang/crates-io-auth-action@v1
@@ -116,7 +111,7 @@ jobs:
       - name: Extract changelog entry
         run: |
           VERSION="${{ github.ref_name }}"
-          NOTES=$(awk -v heading="## $VERSION" '$0 == heading {found=1; next} /^## / {found=0} found && $0 != "---"' changelog.md)
+          NOTES=$(awk "/^## ${VERSION}/{found=1; next} /^## /{found=0} found && !/^---$/" changelog.md)
           if [ -z "$NOTES" ]; then
             echo "Error: no changelog entry found for ${VERSION}"
             exit 1
@@ -130,21 +125,3 @@ jobs:
             unjar-${{ github.ref_name }}-*.tar.gz
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Bump Homebrew formula
-        run: |
-          VERSION="${{ github.ref_name }}"
-          TARBALL="unjar-${VERSION}-aarch64-apple-darwin.tar.gz"
-          SHA256=$(shasum -a 256 "$TARBALL" | awk '{print $1}')
-          URL="https://github.com/vladkens/unjar/releases/download/${VERSION}/${TARBALL}"
-
-          git clone "https://x-access-token:${{ secrets.HOMEBREW_REPO_TOKEN }}@github.com/vladkens/homebrew-tap.git" tap
-          cd tap
-          sed -i '' "s|version \".*\"|version \"${VERSION#v}\"|" unjar.rb
-          sed -i '' "s|url \".*\"|url \"${URL}\"|" unjar.rb
-          sed -i '' "s|sha256 \".*\"|sha256 \"${SHA256}\"|" unjar.rb
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
-          git add unjar.rb
-          git commit -m "unjar ${VERSION}"
-          git push

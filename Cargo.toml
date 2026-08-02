@@ -9,7 +9,7 @@ repository = "https://github.com/vladkens/unjar"
 homepage = "https://github.com/vladkens/unjar"
 documentation = "https://docs.rs/unjar"
 readme = "readme.md"
-include = ["src/**", "Cargo.toml", "Cargo.lock", "LICENSE", "readme.md"]
+include = ["/src/**", "/Cargo.toml", "/Cargo.lock", "/LICENSE", "/changelog.md", "/readme.md"]
 keywords = ["cookies", "browser", "chrome", "firefox", "http"]
 categories = ["command-line-utilities", "web-programming"]
 

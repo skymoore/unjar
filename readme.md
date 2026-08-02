@@ -13,13 +13,7 @@
 
 ## Installation
 
-Install using [Homebrew](https://brew.sh/):
-
-```sh
-brew install vladkens/tap/unjar
-```
-
-Or install using [Cargo](https://crates.io/crates/unjar):
+Install using [Cargo](https://crates.io/crates/unjar):
 
 ```sh
 cargo install unjar
@@ -105,6 +99,16 @@ fn main() -> unjar::Result<()> {
 
 ## Recipes
 
+### curl
+
+Pipe your browser cookies into the GitLab API to show the user logged into your browser:
+
+```sh
+unjar gitlab.com | curl -b - https://gitlab.com/api/v4/user
+```
+
+The GitLab API accepts the browser session cookie and returns the current user as JSON. The `-b -` argument tells `curl` to read the Netscape cookie file from stdin.
+
 ### twscrape
 
 [twscrape](https://github.com/vladkens/twscrape) accepts a cookie header from stdin. Log into X in your browser, then pipe the cookies straight into a local account:
@@ -121,14 +125,18 @@ When the selected profile is logged into X, `unjar x.com` includes the `auth_tok
 
 Legend: ✅ tested · 🟡 implemented, not yet tested · 🚧 not implemented.
 
-| Browser                 | macOS | Linux | Windows |
-| ----------------------- | :---: | :---: | :-----: |
-| Chrome                  |  ✅   |  🟡   |   🚧    |
-| Chromium / Edge / Brave |  🟡   |  🟡   |   🚧    |
-| Firefox                 |  ✅   |  🟡   |   🟡    |
-| Safari                  |  ✅   |   —   |    —    |
+| Browser  | macOS | Linux | Windows |
+| -------- | :---: | :---: | :-----: |
+| Chrome   |  ✅   |  🟡   |   🚧    |
+| Chromium |  🟡   |  🟡   |   🚧    |
+| Edge     |  ✅   |  🟡   |   🚧    |
+| Brave    |  🟡   |  🟡   |   🚧    |
+| Firefox  |  ✅   |  🟡   |   🟡    |
+| Safari   |  ✅   |   —   |    —    |
 
-Chrome, Firefox, and Safari on macOS have been verified end-to-end, including Safari's named profiles. Linux Chromium decryption currently relies on the `peanuts` fallback and will not decrypt profiles that store the key in the system keyring (v11). Windows support is not implemented yet.
+Chrome, Edge, Firefox, and Safari on macOS have been verified end-to-end, including Safari's named profiles. Linux Chromium decryption currently relies on the `peanuts` fallback and will not decrypt profiles that store the key in the system keyring (v11). Windows support is not implemented yet.
+
+Current Chromium-based browsers on Windows protect cookies with App-Bound Encryption, which only the browser itself can decrypt. Supporting current Chrome, Edge, or Brave therefore requires an explicit browser integration such as a user-installed extension; unjar does not attempt to bypass this protection through elevation or process injection.
 
 ## Contributing
 

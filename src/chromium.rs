@@ -100,8 +100,7 @@ mod decrypt {
 
   #[cfg(target_os = "windows")]
   pub(super) fn key(_browser: Browser) -> Result<Vec<u8>> {
-    // TODO: DPAPI-unprotect the key from "Local State" and AES-256-GCM decrypt.
-    Err("chromium decryption on windows is not implemented yet".into())
+    Err("chromium cookie decryption on Windows is not supported because current browsers use App-Bound Encryption".into())
   }
 
   #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -142,6 +141,6 @@ mod decrypt {
 
   #[cfg(target_os = "windows")]
   pub(super) fn value(_key: &[u8], _domain: &str, _enc: &[u8]) -> Result<String> {
-    Err("chromium decryption on windows is not implemented yet".into())
+    Err("chromium cookie decryption on Windows is not supported because current browsers use App-Bound Encryption".into())
   }
 }
