@@ -45,16 +45,23 @@ cargo install unjar
 ## CLI
 
 ```sh
-# dump x.com cookies from Chrome as cookies.txt
+# show discovered browser profiles
+unjar list
+
+# dump x.com cookies using the default browser
 unjar x.com
 
-# a different browser and format
-unjar medium.com --browser firefox --format json
+# select a profile by stable ID, unique display name, or path
+unjar x.com --profile 'chrome:Profile 1'
+unjar x.com --profile 'Work'
+unjar x.com --profile /path/to/profile
 
 # straight into a file for curl / yt-dlp
 unjar x.com -o cookies.txt
 curl -b cookies.txt https://x.com/...
 ```
+
+`unjar list` prints each discovered profile's browser, stable ID, display name, and path. If display names are duplicated, select the profile by ID. Explicit paths may point to a profile directory or directly to its cookie database.
 
 ## Library
 
@@ -63,10 +70,11 @@ cargo add unjar
 ```
 
 ```rust
-use unjar::{Browser, cookies_for};
+use unjar::{Browser, cookies_for_profile, find_profile};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-  let jar = cookies_for(Browser::Chrome, "x.com")?;
+  let profile = find_profile(Browser::Chrome, "chrome:Default")?;
+  let jar = cookies_for_profile(&profile, "x.com")?;
 
   for c in jar.iter() {
     println!("{}={}", c.name, c.value);

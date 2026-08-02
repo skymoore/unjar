@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 /// A supported browser.
@@ -11,6 +11,16 @@ pub enum Browser {
   Brave,
   Firefox,
   Safari,
+}
+
+/// A discovered browser profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Profile {
+  browser: Browser,
+  id: String,
+  name: String,
+  path: PathBuf,
+  cookie_db: PathBuf,
 }
 
 /// Which storage engine a browser uses.
@@ -39,13 +49,70 @@ impl Browser {
     }
   }
 
-  /// Path to the cookie database for this browser, if it exists on disk.
+  /// Path to the default cookie database for this browser, if it exists.
   pub fn cookie_db(&self) -> Option<PathBuf> {
     match self.kind() {
-      Kind::Chromium => chromium_db(self),
+      Kind::Chromium => default_profile(*self).ok().map(|profile| profile.cookie_db),
       Kind::Firefox => firefox_db(),
       Kind::Safari => safari_db(),
     }
+  }
+}
+
+impl Profile {
+  /// Build a profile from a profile directory or a cookie database.
+  pub fn from_path(browser: Browser, path: impl AsRef<Path>) -> Result<Self, String> {
+    if browser.kind() != Kind::Chromium {
+      return Err(format!("{browser}: explicit profile paths are not supported yet"));
+    }
+
+    let path = path.as_ref();
+    let (profile_path, cookie_db) = if path.is_file() {
+      if path.file_name().and_then(|name| name.to_str()) != Some("Cookies") {
+        return Err(format!("{}: expected a Cookies database", path.display()));
+      }
+      let parent = path.parent().unwrap_or(path);
+      let profile = if parent.file_name().and_then(|name| name.to_str()) == Some("Network") {
+        parent.parent().unwrap_or(parent)
+      } else {
+        parent
+      };
+      (profile.to_path_buf(), path.to_path_buf())
+    } else {
+      let db = profile_cookie_db(path).ok_or_else(|| {
+        format!("{}: Cookies not found (expected Cookies or Network/Cookies)", path.display())
+      })?;
+      (path.to_path_buf(), db)
+    };
+
+    let fallback = profile_path.file_name().and_then(|name| name.to_str()).unwrap_or("custom");
+    Ok(Self {
+      browser,
+      id: format!("{browser}:path"),
+      name: profile_name(&profile_path).unwrap_or_else(|| fallback.to_string()),
+      path: profile_path,
+      cookie_db,
+    })
+  }
+
+  pub fn browser(&self) -> Browser {
+    self.browser
+  }
+
+  pub fn id(&self) -> &str {
+    &self.id
+  }
+
+  pub fn name(&self) -> &str {
+    &self.name
+  }
+
+  pub fn path(&self) -> &Path {
+    &self.path
+  }
+
+  pub fn cookie_db(&self) -> &Path {
+    &self.cookie_db
   }
 }
 
@@ -79,32 +146,144 @@ impl FromStr for Browser {
   }
 }
 
-/// Return the first path in `candidates` that exists.
-fn first_existing(candidates: &[PathBuf]) -> Option<PathBuf> {
-  candidates.iter().find(|p| p.exists()).cloned()
+/// Discover browser profiles in known locations.
+pub fn profiles() -> Vec<Profile> {
+  let mut profiles = Vec::new();
+
+  for browser in [Browser::Chrome, Browser::Chromium, Browser::Edge, Browser::Brave] {
+    if let Some(root) = chromium_root(browser) {
+      profiles.extend(profiles_in_root(browser, &root));
+    }
+  }
+
+  profiles.sort_by(|a, b| a.id.cmp(&b.id));
+  profiles
 }
 
-/// Base "User Data" directory for a chromium-family browser.
-fn chromium_root(browser: &Browser) -> Option<PathBuf> {
-  #[cfg(target_os = "macos")]
-  let base = dirs::config_dir()?; // ~/Library/Application Support
-  #[cfg(target_os = "linux")]
-  let base = dirs::config_dir()?; // ~/.config
-  #[cfg(target_os = "windows")]
-  let base = dirs::data_local_dir()?; // %LOCALAPPDATA%
+/// Select one discovered profile by its exact ID or unique display name.
+pub fn find_profile(browser: Browser, selector: &str) -> Result<Profile, String> {
+  find_in_profiles(profiles(), browser, selector)
+}
 
-  let rel: &[&str] = match (browser, cfg!(target_os = "macos")) {
-    (Browser::Chrome, true) => &["Google", "Chrome"],
-    (Browser::Chrome, false) => &["google-chrome"],
-    (Browser::Chromium, true) => &["Chromium"],
-    (Browser::Chromium, false) => &["chromium"],
-    (Browser::Edge, true) => &["Microsoft Edge"],
-    (Browser::Edge, false) => &["microsoft-edge"],
-    (Browser::Brave, _) => &["BraveSoftware", "Brave-Browser"],
+fn find_in_profiles(
+  profiles: impl IntoIterator<Item = Profile>,
+  browser: Browser,
+  selector: &str,
+) -> Result<Profile, String> {
+  let candidates: Vec<_> =
+    profiles.into_iter().filter(|profile| profile.browser == browser).collect();
+  if let Some(profile) = candidates.iter().find(|profile| profile.id == selector) {
+    return Ok(profile.clone());
+  }
+
+  let named: Vec<_> = candidates.iter().filter(|profile| profile.name == selector).collect();
+  match named.as_slice() {
+    [profile] => Ok((*profile).clone()),
+    [] => Err(format!("{browser}: profile '{selector}' not found; run `unjar list`")),
+    _ => {
+      let ids = named.iter().map(|profile| profile.id.as_str()).collect::<Vec<_>>().join(", ");
+      Err(format!("{browser}: profile name '{selector}' is ambiguous; use one of: {ids}"))
+    }
+  }
+}
+
+pub(crate) fn default_profile(browser: Browser) -> Result<Profile, String> {
+  let candidates: Vec<_> =
+    profiles().into_iter().filter(|profile| profile.browser == browser).collect();
+
+  if let Some(profile) = candidates
+    .iter()
+    .find(|profile| profile.path.file_name().and_then(|name| name.to_str()) == Some("Default"))
+  {
+    return Ok(profile.clone());
+  }
+
+  match candidates.as_slice() {
+    [profile] => Ok(profile.clone()),
+    [] => Err(format!("{browser}: cookie database not found")),
+    _ => Err(format!("{browser}: multiple profiles found; select one by name or ID")),
+  }
+}
+
+fn profiles_in_root(browser: Browser, root: &Path) -> Vec<Profile> {
+  let Ok(entries) = std::fs::read_dir(root) else {
+    return Vec::new();
+  };
+
+  entries
+    .filter_map(Result::ok)
+    .filter_map(|entry| {
+      let file_type = entry.file_type().ok()?;
+      if !file_type.is_dir() || file_type.is_symlink() {
+        return None;
+      }
+      let path = entry.path();
+      let cookie_db = profile_cookie_db(&path)?;
+      let directory = entry.file_name().to_string_lossy().into_owned();
+      Some(Profile {
+        browser,
+        id: format!("{browser}:{directory}"),
+        name: profile_name(&path).unwrap_or_else(|| directory.clone()),
+        path,
+        cookie_db,
+      })
+    })
+    .collect()
+}
+
+fn profile_cookie_db(profile: &Path) -> Option<PathBuf> {
+  first_existing(&[profile.join("Network").join("Cookies"), profile.join("Cookies")])
+}
+
+fn profile_name(profile: &Path) -> Option<String> {
+  let data = std::fs::read_to_string(profile.join("Preferences")).ok()?;
+  let value: serde_json::Value = serde_json::from_str(&data).ok()?;
+  value.get("profile")?.get("name")?.as_str().filter(|name| !name.is_empty()).map(str::to_owned)
+}
+
+/// Return the first path in `candidates` that exists.
+fn first_existing(candidates: &[PathBuf]) -> Option<PathBuf> {
+  candidates.iter().find(|p| p.is_file()).cloned()
+}
+
+/// Base user-data directory for a Chromium-family browser.
+fn chromium_root(browser: Browser) -> Option<PathBuf> {
+  #[cfg(target_os = "macos")]
+  let base = dirs::config_dir()?;
+  #[cfg(target_os = "linux")]
+  let base = if browser == Browser::Chrome {
+    std::env::var_os("CHROME_CONFIG_HOME").map(PathBuf::from).or_else(dirs::config_dir)?
+  } else {
+    dirs::config_dir()?
+  };
+  #[cfg(target_os = "windows")]
+  let base = dirs::data_local_dir()?;
+
+  #[cfg(target_os = "macos")]
+  let rel: &[&str] = match browser {
+    Browser::Chrome => &["Google", "Chrome"],
+    Browser::Chromium => &["Chromium"],
+    Browser::Edge => &["Microsoft Edge"],
+    Browser::Brave => &["BraveSoftware", "Brave-Browser"],
+    _ => return None,
+  };
+  #[cfg(target_os = "linux")]
+  let rel: &[&str] = match browser {
+    Browser::Chrome => &["google-chrome"],
+    Browser::Chromium => &["chromium"],
+    Browser::Edge => &["microsoft-edge"],
+    Browser::Brave => &["BraveSoftware", "Brave-Browser"],
+    _ => return None,
+  };
+  #[cfg(target_os = "windows")]
+  let rel: &[&str] = match browser {
+    Browser::Chrome => &["Google", "Chrome"],
+    Browser::Chromium => &["Chromium"],
+    Browser::Edge => &["Microsoft", "Edge"],
+    Browser::Brave => &["BraveSoftware", "Brave-Browser"],
     _ => return None,
   };
 
-  // On Windows chromium stores everything under a "User Data" folder.
   let mut root = base;
   for part in rel {
     root.push(part);
@@ -113,13 +292,6 @@ fn chromium_root(browser: &Browser) -> Option<PathBuf> {
   root.push("User Data");
 
   Some(root)
-}
-
-fn chromium_db(browser: &Browser) -> Option<PathBuf> {
-  let root = chromium_root(browser)?;
-  let profile = root.join("Default");
-  // Newer chromium keeps cookies under Network/, older versions at the profile root.
-  first_existing(&[profile.join("Network").join("Cookies"), profile.join("Cookies")])
 }
 
 fn firefox_db() -> Option<PathBuf> {
@@ -146,4 +318,71 @@ fn safari_db() -> Option<PathBuf> {
   }
   #[cfg(not(target_os = "macos"))]
   None
+}
+
+#[cfg(test)]
+mod tests {
+  use std::fs;
+
+  use tempfile::tempdir;
+
+  use super::*;
+
+  fn profile(root: &Path, directory: &str, name: Option<&str>, network: bool) {
+    let path = root.join(directory);
+    let db = if network { path.join("Network").join("Cookies") } else { path.join("Cookies") };
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    fs::write(db, []).unwrap();
+    if let Some(name) = name {
+      fs::write(path.join("Preferences"), format!(r#"{{"profile":{{"name":"{name}"}}}}"#)).unwrap();
+    }
+  }
+
+  #[test]
+  fn discovers_standard_profiles_with_stable_ids_and_names() {
+    let dir = tempdir().unwrap();
+    profile(dir.path(), "Profile 1", Some("Work"), true);
+    profile(dir.path(), "Default", Some("Personal"), false);
+    fs::create_dir(dir.path().join("System Profile")).unwrap();
+
+    let mut found = profiles_in_root(Browser::Chrome, dir.path());
+    found.sort_by(|a, b| a.id.cmp(&b.id));
+
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[0].id(), "chrome:Default");
+    assert_eq!(found[0].name(), "Personal");
+    assert_eq!(found[1].id(), "chrome:Profile 1");
+    assert_eq!(found[1].name(), "Work");
+    assert!(found[1].cookie_db().ends_with("Network/Cookies"));
+  }
+
+  #[test]
+  fn explicit_path_accepts_profile_directory_and_database() {
+    let dir = tempdir().unwrap();
+    profile(dir.path(), "custom", None, true);
+    let path = dir.path().join("custom");
+    let db = path.join("Network").join("Cookies");
+
+    let from_dir = Profile::from_path(Browser::Chromium, &path).unwrap();
+    let from_db = Profile::from_path(Browser::Chromium, &db).unwrap();
+    assert_eq!(from_dir.cookie_db(), db);
+    assert_eq!(from_db.cookie_db(), db);
+    assert_eq!(from_db.path(), path);
+  }
+
+  #[test]
+  fn selection_prefers_id_and_rejects_duplicate_names() {
+    let dir = tempdir().unwrap();
+    profile(dir.path(), "Default", Some("Same"), false);
+    profile(dir.path(), "Profile 1", Some("Same"), false);
+    let found = profiles_in_root(Browser::Chrome, dir.path());
+
+    assert_eq!(
+      find_in_profiles(found.clone(), Browser::Chrome, "chrome:Profile 1").unwrap().id(),
+      "chrome:Profile 1"
+    );
+    let error = find_in_profiles(found, Browser::Chrome, "Same").unwrap_err();
+    assert!(error.contains("ambiguous"));
+    assert!(error.contains("chrome:Default"));
+  }
 }
