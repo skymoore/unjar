@@ -20,8 +20,8 @@ docs:
 	RUSTDOCFLAGS="-D warnings" cargo doc --lib --no-default-features --locked --no-deps --open
 
 build:
-	cargo build --release
-	ls -lh target/release/$(shell basename $(CURDIR))
+	cargo build --release --locked
+	ls -lh target/release/unjar
 
 update:
 	cargo upgrade -i
