@@ -126,9 +126,9 @@ Legend: ✅ tested · 🟡 implemented, not yet tested · 🚧 not implemented.
 | Chrome                  |  ✅   |  🟡   |   🚧    |
 | Chromium / Edge / Brave |  🟡   |  🟡   |   🚧    |
 | Firefox                 |  ✅   |  🟡   |   🟡    |
-| Safari                  |  🚧   |   —   |    —    |
+| Safari                  |  ✅   |   —   |    —    |
 
-Chrome and Firefox on macOS have been verified end-to-end. Linux Chromium decryption currently relies on the `peanuts` fallback and will not decrypt profiles that store the key in the system keyring (v11). Windows and Safari are not implemented yet.
+Chrome, Firefox, and Safari on macOS have been verified end-to-end, including Safari's named profiles. Linux Chromium decryption currently relies on the `peanuts` fallback and will not decrypt profiles that store the key in the system keyring (v11). Windows support is not implemented yet.
 
 ## Contributing
 

@@ -61,9 +61,8 @@ impl Browser {
 
   pub(crate) fn cookie_db(&self) -> Result<PathBuf> {
     match self.kind() {
-      Kind::Chromium | Kind::Firefox => default_profile(*self).map(|profile| profile.cookie_db),
-      Kind::Safari => {
-        safari_db().ok_or_else(|| format!("{self}: cookie database not found").into())
+      Kind::Chromium | Kind::Firefox | Kind::Safari => {
+        default_profile(*self).map(|profile| profile.cookie_db)
       }
     }
   }
@@ -142,8 +141,30 @@ impl Profile {
         }
         (path.to_path_buf(), db)
       }
+      Kind::Safari if path.is_file() => {
+        if path.file_name().and_then(|name| name.to_str()) != Some("Cookies.binarycookies") {
+          return Err(format!("{}: expected a Cookies.binarycookies file", path.display()).into());
+        }
+        let parent = path.parent().unwrap_or(path);
+        let profile = if parent.file_name().and_then(|name| name.to_str()) == Some("Cookies") {
+          parent.parent().unwrap_or(parent)
+        } else {
+          parent
+        };
+        (profile.to_path_buf(), path.to_path_buf())
+      }
       Kind::Safari => {
-        return Err(format!("{browser}: explicit profile paths are not supported yet").into());
+        let db = first_existing(&[
+          path.join("Cookies").join("Cookies.binarycookies"),
+          path.join("Cookies.binarycookies"),
+        ])
+        .ok_or_else(|| {
+          Error::from(format!(
+            "{}: Cookies.binarycookies not found (expected Cookies.binarycookies or Cookies/Cookies.binarycookies)",
+            path.display()
+          ))
+        })?;
+        (path.to_path_buf(), db)
       }
     };
 
@@ -244,8 +265,14 @@ pub fn profiles() -> Vec<Profile> {
   if let Some(root) = firefox_root() {
     profiles.extend(firefox_profiles_in_root(&root));
   }
+  profiles.extend(safari_profiles());
 
-  profiles.sort_by(|a, b| a.browser.cmp(&b.browser).then_with(|| a.id.cmp(&b.id)));
+  profiles.sort_by(|a, b| {
+    a.browser
+      .cmp(&b.browser)
+      .then_with(|| b.is_default.cmp(&a.is_default))
+      .then_with(|| a.id.cmp(&b.id))
+  });
   profiles
 }
 
@@ -553,17 +580,116 @@ fn parse_ini(contents: &str) -> Vec<(String, HashMap<String, String>)> {
   sections
 }
 
-fn safari_db() -> Option<PathBuf> {
+fn safari_profiles() -> Vec<Profile> {
   #[cfg(target_os = "macos")]
   {
-    let home = dirs::home_dir()?;
-    first_existing(&[
-      home.join("Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies"),
-      home.join("Library/Cookies/Cookies.binarycookies"),
-    ])
+    let Some(home) = dirs::home_dir() else {
+      return Vec::new();
+    };
+    let container = home.join("Library/Containers/com.apple.Safari/Data/Library");
+    let legacy_db = home.join("Library/Cookies/Cookies.binarycookies");
+    safari_profiles_in_root(&container, &legacy_db)
   }
   #[cfg(not(target_os = "macos"))]
-  None
+  Vec::new()
+}
+
+fn safari_profiles_in_root(container: &Path, legacy_db: &Path) -> Vec<Profile> {
+  let modern_db = container.join("Cookies").join("Cookies.binarycookies");
+  let default_db = first_existing(&[modern_db, legacy_db.to_path_buf()]);
+  let mut profiles = Vec::new();
+
+  if let Some(cookie_db) = default_db {
+    let path = if cookie_db.starts_with(container) {
+      container.to_path_buf()
+    } else {
+      cookie_db.parent().and_then(Path::parent).unwrap_or(legacy_db).to_path_buf()
+    };
+    profiles.push(Profile {
+      browser: Browser::Safari,
+      id: "default".into(),
+      name: "default".into(),
+      is_default: true,
+      path,
+      cookie_db,
+    });
+  }
+
+  let named = safari_named_profiles_from_db(container)
+    .unwrap_or_else(|| safari_named_profiles_from_directories(container));
+  for (uuid, title) in named {
+    let store = container.join("WebKit").join("WebsiteDataStore").join(uuid.to_ascii_lowercase());
+    let cookie_db = store.join("Cookies").join("Cookies.binarycookies");
+    if !cookie_db.is_file() {
+      continue;
+    }
+
+    let fallback = format!("profile-{}", uuid[..8].to_ascii_lowercase());
+    let name = title.trim();
+    let name = if name.is_empty() { fallback } else { name.to_owned() };
+    let id = unique_profile_id(&profiles, &name);
+    profiles.push(Profile {
+      browser: Browser::Safari,
+      id: id.clone(),
+      name: id,
+      is_default: false,
+      path: store,
+      cookie_db,
+    });
+  }
+
+  profiles
+}
+
+fn safari_named_profiles_from_db(container: &Path) -> Option<Vec<(String, String)>> {
+  let path = container.join("Safari").join("SafariTabs.db");
+  let db = crate::sqlite::open_copy(&path).ok()?;
+  let mut statement = db
+    .conn
+    .prepare(
+      "SELECT external_uuid, COALESCE(title, '') FROM bookmarks \
+       WHERE subtype = 2 AND external_uuid != 'DefaultProfile'",
+    )
+    .ok()?;
+  let rows =
+    statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).ok()?;
+
+  Some(rows.filter_map(std::result::Result::ok).filter(|(uuid, _)| is_uuid(uuid)).collect())
+}
+
+fn safari_named_profiles_from_directories(container: &Path) -> Vec<(String, String)> {
+  let Ok(entries) = std::fs::read_dir(container.join("Safari").join("Profiles")) else {
+    return Vec::new();
+  };
+  entries
+    .filter_map(std::result::Result::ok)
+    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir() && !kind.is_symlink()))
+    .filter_map(|entry| entry.file_name().into_string().ok())
+    .filter(|uuid| is_uuid(uuid))
+    .map(|uuid| (uuid, String::new()))
+    .collect()
+}
+
+fn is_uuid(value: &str) -> bool {
+  let mut parts = value.split('-');
+  [8, 4, 4, 4, 12].into_iter().all(|len| {
+    parts
+      .next()
+      .is_some_and(|part| part.len() == len && part.bytes().all(|byte| byte.is_ascii_hexdigit()))
+  }) && parts.next().is_none()
+}
+
+fn unique_profile_id(profiles: &[Profile], name: &str) -> String {
+  if profiles.iter().all(|profile| profile.id != name) {
+    return name.to_owned();
+  }
+  for suffix in 2.. {
+    let candidate = format!("{name}-{suffix}");
+    if profiles.iter().all(|profile| profile.id != candidate) {
+      return candidate;
+    }
+  }
+  unreachable!()
 }
 
 #[cfg(test)]
@@ -663,6 +789,63 @@ mod tests {
 
     let from_dir = Profile::from_path(Browser::Firefox, &path).unwrap();
     let from_db = Profile::from_path(Browser::Firefox, &db).unwrap();
+    assert_eq!(from_dir.cookie_db(), db);
+    assert_eq!(from_db.cookie_db(), db);
+    assert_eq!(from_db.path(), path);
+  }
+
+  #[test]
+  fn discovers_default_and_named_safari_profiles() {
+    let dir = tempdir().unwrap();
+    let container = dir.path().join("container");
+    let default_db = container.join("Cookies").join("Cookies.binarycookies");
+    fs::create_dir_all(default_db.parent().unwrap()).unwrap();
+    fs::write(&default_db, []).unwrap();
+
+    let uuid = "49B7B395-EC54-4474-BC94-7654492BB176";
+    let named_db = container
+      .join("WebKit")
+      .join("WebsiteDataStore")
+      .join(uuid.to_ascii_lowercase())
+      .join("Cookies")
+      .join("Cookies.binarycookies");
+    fs::create_dir_all(named_db.parent().unwrap()).unwrap();
+    fs::write(&named_db, []).unwrap();
+
+    let tabs = container.join("Safari").join("SafariTabs.db");
+    fs::create_dir_all(tabs.parent().unwrap()).unwrap();
+    let connection = rusqlite::Connection::open(tabs).unwrap();
+    connection
+      .execute("CREATE TABLE bookmarks (external_uuid TEXT, title TEXT, subtype INTEGER)", [])
+      .unwrap();
+    connection
+      .execute(
+        "INSERT INTO bookmarks (external_uuid, title, subtype) VALUES (?1, ?2, 2)",
+        [uuid, "WORK"],
+      )
+      .unwrap();
+    drop(connection);
+
+    let found = safari_profiles_in_root(&container, &dir.path().join("legacy.binarycookies"));
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[0].id(), "default");
+    assert!(found[0].is_default());
+    assert_eq!(found[0].cookie_db(), default_db);
+    assert_eq!(found[1].id(), "WORK");
+    assert!(!found[1].is_default());
+    assert_eq!(found[1].cookie_db(), named_db);
+  }
+
+  #[test]
+  fn explicit_safari_path_accepts_profile_directory_and_cookie_file() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("profile");
+    let db = path.join("Cookies").join("Cookies.binarycookies");
+    fs::create_dir_all(db.parent().unwrap()).unwrap();
+    fs::write(&db, []).unwrap();
+
+    let from_dir = Profile::from_path(Browser::Safari, &path).unwrap();
+    let from_db = Profile::from_path(Browser::Safari, &db).unwrap();
     assert_eq!(from_dir.cookie_db(), db);
     assert_eq!(from_db.cookie_db(), db);
     assert_eq!(from_db.path(), path);
