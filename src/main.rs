@@ -46,7 +46,7 @@ struct Export {
   #[arg(short, long)]
   browser: Option<Browser>,
 
-  /// Profile ID, unique name, profile directory, or cookie database
+  /// Profile ID, name, unique partial match, profile directory, or cookie database
   #[arg(short, long)]
   profile: Option<String>,
 

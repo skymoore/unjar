@@ -67,7 +67,7 @@ impl Browser {
     }
   }
 
-  /// Select a profile in this browser by browser-local ID, unique display name, or explicit path.
+  /// Select a profile in this browser by ID, name, unique partial match, or explicit path.
   ///
   /// The browser is supplied by `self`, not encoded in `selector`. An explicit path may point to a
   /// profile directory or its cookie database.
@@ -276,7 +276,7 @@ pub fn profiles() -> Vec<Profile> {
   profiles
 }
 
-/// Select a discovered profile by browser-local ID, globally unique display name, or known path.
+/// Select a discovered profile by ID, name, unique partial match, or known path.
 ///
 /// `selector` does not include a browser name. Use [`Browser::find_profile`] to constrain the
 /// lookup to one browser; that method also accepts an explicit profile directory or cookie database
@@ -324,19 +324,45 @@ pub fn find_profile(selector: &str) -> Result<Profile> {
 }
 
 fn select_discovered(candidates: &[Profile], selector: &str) -> Result<Option<Profile>> {
-  let by_id: Vec<_> = candidates.iter().filter(|profile| profile.id == selector).cloned().collect();
+  let selector_lower = selector.to_lowercase();
+  let by_id: Vec<_> = candidates
+    .iter()
+    .filter(|profile| profile.id.to_lowercase() == selector_lower)
+    .cloned()
+    .collect();
   match by_id.as_slice() {
     [profile] => return Ok(Some(profile.clone())),
     [] => {}
     _ => return Err(ambiguous_error(selector, &by_id)),
   }
 
-  let by_name: Vec<_> =
-    candidates.iter().filter(|profile| profile.name == selector).cloned().collect();
+  let by_name: Vec<_> = candidates
+    .iter()
+    .filter(|profile| profile.name.to_lowercase() == selector_lower)
+    .cloned()
+    .collect();
   match by_name.as_slice() {
+    [profile] => return Ok(Some(profile.clone())),
+    [] => {}
+    _ => return Err(ambiguous_error(selector, &by_name)),
+  }
+
+  if selector_lower.is_empty() {
+    return Ok(None);
+  }
+
+  let partial: Vec<_> = candidates
+    .iter()
+    .filter(|profile| {
+      profile.id.to_lowercase().contains(&selector_lower)
+        || profile.name.to_lowercase().contains(&selector_lower)
+    })
+    .cloned()
+    .collect();
+  match partial.as_slice() {
     [profile] => Ok(Some(profile.clone())),
     [] => Ok(None),
-    _ => Err(ambiguous_error(selector, &by_name)),
+    _ => Err(ambiguous_error(selector, &partial)),
   }
 }
 
@@ -940,14 +966,18 @@ mod tests {
   }
 
   #[test]
-  fn selection_prefers_local_id_and_rejects_duplicate_names() {
+  fn selection_is_case_insensitive_accepts_partials_and_rejects_ambiguity() {
     let dir = tempdir().unwrap();
     profile(dir.path(), "Default", Some("Same"), false);
     profile(dir.path(), "Profile 1", Some("Same"), false);
+    profile(dir.path(), "Profile 2", Some("Personal"), false);
     let found = profiles_in_root(Browser::Chrome, dir.path());
 
-    assert_eq!(select_discovered(&found, "Profile 1").unwrap().unwrap().id(), "Profile 1");
-    let error = select_discovered(&found, "Same").unwrap_err();
+    assert_eq!(select_discovered(&found, "profile 1").unwrap().unwrap().id(), "Profile 1");
+    assert_eq!(select_discovered(&found, "file 1").unwrap().unwrap().id(), "Profile 1");
+    assert_eq!(select_discovered(&found, "PERSONAL").unwrap().unwrap().id(), "Profile 2");
+    assert_eq!(select_discovered(&found, "sona").unwrap().unwrap().id(), "Profile 2");
+    let error = select_discovered(&found, "sam").unwrap_err();
     let error = error.to_string();
     assert!(error.contains("ambiguous"));
     assert!(error.contains("chrome / Default"));
